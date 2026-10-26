@@ -37,13 +37,16 @@ function Icon({ name, size = 18 }: { name: string; size?: number }) {
 
 export default function Home() {
   const [items, setItems] = useState<Item[]>(initialItems);
-  const [activeTab, setActiveTab] = useState<"list" | "prices" | "purchased">("list");
+  const [activeTab, setActiveTab] = useState<"list" | "prices" | "items">("list");
+  const [catalogOnly, setCatalogOnly] = useState<Item[]>([]);
   const [purchasedItems, setPurchasedItems] = useState<Item[]>([]);
   const [storageReady, setStorageReady] = useState(false);
-  const [purchaseSort, setPurchaseSort] = useState<"recent" | "price-low" | "price-high" | "times">("recent");
+  const [catalogSort, setCatalogSort] = useState<"name" | "price-low" | "price-high" | "times">("name");
   const [selectedStore, setSelectedStore] = useState<Store>("Walmart");
   const [query, setQuery] = useState("");
   const [newItem, setNewItem] = useState("");
+  const [newCatalogItem, setNewCatalogItem] = useState("");
+  const [showSuggestions, setShowSuggestions] = useState(false);
   const [modal, setModal] = useState<{ item: Item; bought: boolean } | null>(null);
   const [purchase, setPurchase] = useState({ store: "Walmart" as Store, amount: "" });
   const [showHistory, setShowHistory] = useState<string | null>(null);
@@ -58,10 +61,13 @@ export default function Home() {
       const legacy = JSON.parse(localStorage.getItem("common-table-archive-v1") ?? "[]") as Item[];
       setPurchasedItems(legacy.map((item) => ({ ...item, purchases: item.purchases ?? item.prices.slice(-1) })));
     }
+    const catalog = localStorage.getItem("greenhouse-catalog-v1");
+    if (catalog) { try { setCatalogOnly(JSON.parse(catalog) as Item[]); } catch { /* use shared list items */ } }
     setStorageReady(true);
   }, []);
   useEffect(() => { if (storageReady) localStorage.setItem("common-table-groceries-v1", JSON.stringify(items)); }, [items, storageReady]);
   useEffect(() => { if (storageReady) localStorage.setItem("greenhouse-purchased-v1", JSON.stringify(purchasedItems)); }, [purchasedItems, storageReady]);
+  useEffect(() => { if (storageReady) localStorage.setItem("greenhouse-catalog-v1", JSON.stringify(catalogOnly)); }, [catalogOnly, storageReady]);
 
   const visibleItems = useMemo(() => items.filter((item) => item.name.toLowerCase().includes(query.toLowerCase())), [items, query]);
   const groups = useMemo(() => {
@@ -73,19 +79,53 @@ export default function Home() {
     return [...map.entries()].sort((a, b) => a[0] === "No price yet" ? 1 : b[0] === "No price yet" ? -1 : a[0].localeCompare(b[0]));
   }, [visibleItems]);
   const tracked = items.filter((item) => item.prices.length > 0).length;
-  const visiblePurchased = useMemo(() => purchasedItems.filter((item) => item.name.toLowerCase().includes(query.toLowerCase())).sort((a, b) => {
+  const catalogItems = useMemo(() => {
+    const combined = [...catalogOnly, ...purchasedItems, ...items];
+    const unique = new Map<string, Item>();
+    for (const item of combined) {
+      const key = item.name.toLowerCase();
+      const prior = unique.get(key);
+      unique.set(key, prior ? { ...prior, ...item, prices: item.prices.length ? item.prices : prior.prices, purchases: item.purchases?.length ? item.purchases : prior.purchases } : item);
+    }
+    return [...unique.values()];
+  }, [catalogOnly, purchasedItems, items]);
+  const visibleCatalog = useMemo(() => catalogItems.filter((item) => item.name.toLowerCase().includes(query.toLowerCase())).sort((a, b) => {
     const average = (item: Item) => { const purchases = item.purchases ?? []; return purchases.length ? purchases.reduce((sum, p) => sum + p.amount, 0) / purchases.length : Infinity; };
-    if (purchaseSort === "times") return (b.purchases?.length ?? 0) - (a.purchases?.length ?? 0);
-    if (purchaseSort === "price-low") return average(a) - average(b);
-    if (purchaseSort === "price-high") return average(b) - average(a);
-    return (b.purchases?.at(-1)?.date ?? "").localeCompare(a.purchases?.at(-1)?.date ?? "");
-  }), [purchasedItems, query, purchaseSort]);
+    if (catalogSort === "times") return (b.purchases?.length ?? 0) - (a.purchases?.length ?? 0);
+    if (catalogSort === "price-low") return average(a) - average(b);
+    if (catalogSort === "price-high") return average(b) - average(a);
+    return a.name.localeCompare(b.name);
+  }), [catalogItems, query, catalogSort]);
+  const suggestions = useMemo(() => newItem.trim().length < 1 ? [] : catalogItems.filter((item) => item.name.toLowerCase().includes(newItem.trim().toLowerCase())).slice(0, 5), [catalogItems, newItem]);
 
-  function addItem() {
+  function addItem(item?: Item) {
+    if (item) {
+      setItems((list) => list.some((entry) => entry.name.toLowerCase() === item.name.toLowerCase()) ? list : [{ ...item, id: crypto.randomUUID(), checked: false }, ...list]);
+      setNewItem("");
+      setShowSuggestions(false);
+      setNotice(`${item.name} added to the grocery list`);
+      window.setTimeout(() => setNotice(""), 2500);
+      return;
+    }
     const name = newItem.trim();
     if (!name) return;
-    setItems((list) => [{ id: crypto.randomUUID(), name, category: "Other", unit: "", checked: false, prices: [] }, ...list]);
+    const newEntry = { id: crypto.randomUUID(), name, category: "Other", unit: "", checked: false, prices: [] };
+    setCatalogOnly((list) => list.some((entry) => entry.name.toLowerCase() === name.toLowerCase()) ? list : [newEntry, ...list]);
+    setItems((list) => [{ ...newEntry, id: crypto.randomUUID() }, ...list]);
     setNewItem("");
+    setShowSuggestions(false);
+  }
+  function addCatalogItem() {
+    const name = newCatalogItem.trim();
+    if (!name) return;
+    if (catalogItems.some((item) => item.name.toLowerCase() === name.toLowerCase())) {
+      setNotice(`${name} is already in the items catalog`);
+    } else {
+      setCatalogOnly((list) => [{ id: crypto.randomUUID(), name, category: "Other", unit: "", prices: [], purchases: [], checked: false }, ...list]);
+      setNotice(`${name} added to the items catalog`);
+    }
+    setNewCatalogItem("");
+    window.setTimeout(() => setNotice(""), 2500);
   }
   function removeItem(item: Item) {
     setPurchase({ store: "Walmart", amount: "" });
@@ -103,6 +143,7 @@ export default function Home() {
       });
       setNotice(`${modal.item.name} purchase saved`);
     } else {
+      setCatalogOnly((list) => list.some((entry) => entry.name.toLowerCase() === modal.item.name.toLowerCase()) ? list : [modal.item, ...list]);
       setItems((list) => list.filter((item) => item.id !== modal.item.id));
       setNotice(`${modal.item.name} removed from the list`);
     }
@@ -138,31 +179,32 @@ export default function Home() {
         <div className="side-label nav-label">WORKSPACE</div>
         <button className={`nav-item ${activeTab === "list" ? "active" : ""}`} onClick={() => setActiveTab("list")}><Icon name="cart"/><span>Grocery list</span><b>{items.length}</b></button>
         <button className={`nav-item ${activeTab === "prices" ? "active" : ""}`} onClick={() => setActiveTab("prices")}><Icon name="chart"/><span>Price comparison</span></button>
-        <button className={`nav-item ${activeTab === "purchased" ? "active" : ""}`} onClick={() => setActiveTab("purchased")}><Icon name="history"/><span>Purchased items</span><b>{purchasedItems.length}</b></button>
+        <button className={`nav-item ${activeTab === "items" ? "active" : ""}`} onClick={() => setActiveTab("items")}><Icon name="history"/><span>Items</span><b>{catalogItems.length}</b></button>
         <button className="nav-item" onClick={() => setShowHistory(showHistory ? null : "all")}><Icon name="history"/><span>Purchase history</span></button>
         <div className="sidebar-bottom"><div className="member-stack"><span>J</span><span>M</span><span>A</span><span>+9</span></div><div className="member-copy"><strong>12 members</strong><small>Shopping together</small></div><span className="presence-dot"/></div>
       </aside>
 
       <section className="main-area" id="top">
-        <header className="topbar"><div className="breadcrumb">Greenhouse <span>/</span> <strong>{activeTab === "list" ? "Grocery list" : activeTab === "prices" ? "Price comparison" : "Purchased items"}</strong></div><div className="top-actions"><span className="sync-label"><i/> Up to date</span><button className="avatar" aria-label="Your profile">E</button></div></header>
+        <header className="topbar"><div className="breadcrumb">Greenhouse <span>/</span> <strong>{activeTab === "list" ? "Grocery list" : activeTab === "prices" ? "Price comparison" : "Items"}</strong></div><div className="top-actions"><span className="sync-label"><i/> Up to date</span><button className="avatar" aria-label="Your profile">E</button></div></header>
         <div className="content">
-          <div className="welcome-row"><div><div className="eyebrow">GREENHOUSE COOPERATIVE · 12 MEMBERS</div><h1>{activeTab === "list" ? "The grocery list" : activeTab === "prices" ? "Price comparison" : "Our pantry, purchased"}</h1><p>{activeTab === "list" ? "Good food, good prices, good neighbors." : activeTab === "prices" ? "See how every store stacks up before you head out." : "Everything the house has bought, all in one place."}</p></div><label className="upload-button"><Icon name="upload" size={17}/> Upload prices<input type="file" accept=".csv,text/csv" onChange={(e) => importPrices(e.target.files?.[0])}/></label></div>
+          <div className="welcome-row"><div><div className="eyebrow">GREENHOUSE COOPERATIVE · 12 MEMBERS</div><h1>{activeTab === "list" ? "The grocery list" : activeTab === "prices" ? "Price comparison" : "Household items"}</h1><p>{activeTab === "list" ? "Good food, good prices, good neighbors." : activeTab === "prices" ? "See how every store stacks up before you head out." : "Your house’s food catalog, with prices and purchase history."}</p></div><label className="upload-button"><Icon name="upload" size={17}/> Upload prices<input type="file" accept=".csv,text/csv" onChange={(e) => importPrices(e.target.files?.[0])}/></label></div>
 
           <div className="summary-grid"><div className="summary-card"><span className="summary-icon mint"><Icon name="cart"/></span><div><small>ON THE LIST</small><strong>{items.length} <em>items</em></strong></div></div><div className="summary-card"><span className="summary-icon peach"><Icon name="chart"/></span><div><small>PRICES TRACKED</small><strong>{tracked} <em>of {items.length} items</em></strong></div></div><div className="summary-card savings-card"><span className="summary-icon yellow"><Icon name="money"/></span><div><small>BEST SHOPPING ROUTE</small><strong>3 <em>stores this week</em></strong></div><span className="sparkline">⌁</span></div></div>
 
           <div className="workspace-grid"><div className="list-panel panel">
-            <div className="panel-heading"><div><h2>{activeTab === "list" ? "Things to pick up" : activeTab === "prices" ? "Compare your stores" : "Purchased by the house"}</h2><p>{activeTab === "list" ? "Grouped by where each item costs least" : activeTab === "prices" ? `Showing prices at ${selectedStore}` : `${purchasedItems.length} different items bought so far`}</p></div><button className="icon-button" title="Purchase history" onClick={() => setShowHistory(showHistory ? null : "all")}><Icon name="history" size={17}/></button></div>
+            <div className="panel-heading"><div><h2>{activeTab === "list" ? "Things to pick up" : activeTab === "prices" ? "Compare your stores" : "Items the house buys"}</h2><p>{activeTab === "list" ? "Grouped by where each item costs least" : activeTab === "prices" ? `Showing prices at ${selectedStore}` : `${catalogItems.length} items in the house catalog`}</p></div><button className="icon-button" title="Purchase history" onClick={() => setShowHistory(showHistory ? null : "all")}><Icon name="history" size={17}/></button></div>
             <div className="list-toolbar"><label className="search-box"><Icon name="search" size={16}/><input placeholder="Find something…" value={query} onChange={(e) => setQuery(e.target.value)}/><kbd>⌘ K</kbd></label><button className="filter-button">All items <Icon name="chevron" size={14}/></button></div>
 
             {activeTab === "prices" && <div className="store-tabs">{stores.map((store) => <button key={store} className={selectedStore === store ? "selected" : ""} onClick={() => setSelectedStore(store)}>{store}</button>)}</div>}
-            {activeTab === "purchased" && <div className="sort-bar"><span>Sort by</span><select value={purchaseSort} onChange={(e) => setPurchaseSort(e.target.value as typeof purchaseSort)}><option value="recent">Recently bought</option><option value="price-low">Average price: low to high</option><option value="price-high">Average price: high to low</option><option value="times">Times bought</option></select></div>}
+            {activeTab === "items" && <div className="sort-bar"><span>Sort by</span><select value={catalogSort} onChange={(e) => setCatalogSort(e.target.value as typeof catalogSort)}><option value="name">Name</option><option value="price-low">Average price: low to high</option><option value="price-high">Average price: high to low</option><option value="times">Times bought</option></select></div>}
             <div className="list-body">
-              {activeTab === "list" ? groups.map(([store, grouped]) => <section className="store-group" key={store}><div className="group-header"><span className="store-marker">{store === "Costco" ? "C" : store === "Walmart" ? "W" : store === "Target" ? "T" : store === "Trader Joe's" ? "TJ" : "·"}</span><strong>{store === "No price yet" ? "Still need a price" : `Cheapest at ${store}`}</strong><span className="group-count">{grouped.length}</span><span className="group-rule"/></div>{grouped.map((item) => { const cheapest = best(item); return <article className="grocery-row" key={item.id}><button className="check-box" aria-label={`Mark ${item.name} bought`} onClick={() => removeItem(item)}><span/></button><div className="food-icon">{icons[item.category] ?? icons.Other}</div><div className="item-main"><strong>{item.name}</strong><small>{item.unit || item.category}</small></div>{cheapest ? <div className="best-price"><strong>{money(cheapest.amount)}</strong><small>best price</small></div> : <div className="best-price"><strong>—</strong><small>add a price</small></div>}<button className="compare-link" onClick={() => { setSelectedStore("Walmart"); setActiveTab("prices"); }}>Compare</button><button className="row-menu" title="Remove item" onClick={() => setModal({ item, bought: false })}><Icon name="trash" size={15}/></button></article>; })}</section>) : activeTab === "prices" ? visibleItems.map((item) => { const cheapest = best(item); const price = item.prices.filter((p) => p.store === selectedStore).sort((a, b) => a.amount - b.amount)[0]; return <article className="grocery-row compare-row" key={item.id}><div className="food-icon">{icons[item.category] ?? icons.Other}</div><div className="item-main"><strong>{item.name}</strong><small>{item.unit || item.category}</small></div><div className="best-price"><strong>{price ? money(price.amount) : "—"}</strong><small>{price ? `at ${selectedStore}` : "no price yet"}</small></div>{price && cheapest && cheapest.store !== selectedStore ? <span className="price-diff">+{money(price.amount - cheapest.amount)} vs best</span> : price ? <span className="best-tag">Best price</span> : <span className="price-diff">Not tracked</span>}<button className="row-menu" title="View price history" onClick={() => setShowHistory(showHistory === item.id ? null : item.id)}><Icon name="history" size={15}/></button></article>; }) : visiblePurchased.map((item) => { const purchases = item.purchases ?? []; const average = purchases.length ? purchases.reduce((sum, entry) => sum + entry.amount, 0) / purchases.length : 0; const latest = purchases.at(-1); return <article className="grocery-row compare-row" key={item.id}><div className="food-icon">{icons[item.category] ?? icons.Other}</div><div className="item-main"><strong>{item.name}</strong><small>{item.unit || item.category} · Last bought {latest?.date ?? "—"}</small></div><div className="best-price"><strong>{money(average)}</strong><small>average paid</small></div><span className="best-tag">{purchases.length} {purchases.length === 1 ? "purchase" : "purchases"}</span><button className="row-menu" title="View price history" onClick={() => setShowHistory(showHistory === item.id ? null : item.id)}><Icon name="history" size={15}/></button></article>; })}
-              {activeTab === "purchased" && visiblePurchased.length === 0 && <div className="empty-state">No purchased items yet. Mark something as bought from your grocery list to start the pantry history.</div>}
-              {visibleItems.length === 0 && <div className="empty-state">No items found. Try another search.</div>}
+              {activeTab === "list" ? groups.map(([store, grouped]) => <section className="store-group" key={store}><div className="group-header"><span className="store-marker">{store === "Costco" ? "C" : store === "Walmart" ? "W" : store === "Target" ? "T" : store === "Trader Joe's" ? "TJ" : "·"}</span><strong>{store === "No price yet" ? "Still need a price" : `Cheapest at ${store}`}</strong><span className="group-count">{grouped.length}</span><span className="group-rule"/></div>{grouped.map((item) => { const cheapest = best(item); return <article className="grocery-row" key={item.id}><button className="check-box" aria-label={`Mark ${item.name} bought`} onClick={() => removeItem(item)}><span/></button><div className="food-icon">{icons[item.category] ?? icons.Other}</div><div className="item-main"><strong>{item.name}</strong><small>{item.unit || item.category}</small></div>{cheapest ? <div className="best-price"><strong>{money(cheapest.amount)}</strong><small>best price</small></div> : <div className="best-price"><strong>—</strong><small>add a price</small></div>}<button className="compare-link" onClick={() => { setSelectedStore("Walmart"); setActiveTab("prices"); }}>Compare</button><button className="row-menu" title="Remove item" onClick={() => setModal({ item, bought: false })}><Icon name="trash" size={15}/></button></article>; })}</section>) : activeTab === "prices" ? visibleItems.map((item) => { const cheapest = best(item); const price = item.prices.filter((p) => p.store === selectedStore).sort((a, b) => a.amount - b.amount)[0]; return <article className="grocery-row compare-row" key={item.id}><div className="food-icon">{icons[item.category] ?? icons.Other}</div><div className="item-main"><strong>{item.name}</strong><small>{item.unit || item.category}</small></div><div className="best-price"><strong>{price ? money(price.amount) : "—"}</strong><small>{price ? `at ${selectedStore}` : "no price yet"}</small></div>{price && cheapest && cheapest.store !== selectedStore ? <span className="price-diff">+{money(price.amount - cheapest.amount)} vs best</span> : price ? <span className="best-tag">Best price</span> : <span className="price-diff">Not tracked</span>}<button className="row-menu" title="View price history" onClick={() => setShowHistory(showHistory === item.id ? null : item.id)}><Icon name="history" size={15}/></button></article>; }) : visibleCatalog.map((item) => { const purchases = item.purchases ?? []; const average = purchases.length ? purchases.reduce((sum, entry) => sum + entry.amount, 0) / purchases.length : null; const isListed = items.some((entry) => entry.name.toLowerCase() === item.name.toLowerCase()); return <article className="grocery-row compare-row" key={item.id}><div className="food-icon">{icons[item.category] ?? icons.Other}</div><div className="item-main"><strong>{item.name}</strong><small>{item.unit || item.category} · {purchases.length} {purchases.length === 1 ? "purchase" : "purchases"}</small></div><div className="best-price"><strong>{average === null ? "—" : money(average)}</strong><small>{average === null ? "no purchase yet" : "average paid"}</small></div><button className={`catalog-add ${isListed ? "listed" : ""}`} disabled={isListed} onClick={() => addItem(item)}>{isListed ? "On list" : "+ Add to list"}</button><button className="row-menu" title="View price history" onClick={() => setShowHistory(showHistory === item.id ? null : item.id)}><Icon name="history" size={15}/></button></article>; })}
+              {activeTab === "items" && visibleCatalog.length === 0 && <div className="empty-state">No items found. Add a food below to grow the Greenhouse catalog.</div>}
+              {activeTab !== "items" && visibleItems.length === 0 && <div className="empty-state">No items found. Try another search.</div>}
             </div>
 
-            {activeTab === "list" && <div className="add-item"><span className="add-plus"><Icon name="plus" size={16}/></span><input placeholder="Add something to the list…" value={newItem} onChange={(e) => setNewItem(e.target.value)} onKeyDown={(e) => e.key === "Enter" && addItem()}/><button onClick={addItem}>Add item</button></div>}
+            {activeTab === "list" && <div className="add-item-wrap"><div className="add-item"><span className="add-plus"><Icon name="plus" size={16}/></span><input placeholder="Add something to the list…" value={newItem} onFocus={() => setShowSuggestions(true)} onBlur={() => window.setTimeout(() => setShowSuggestions(false), 150)} onChange={(e) => { setNewItem(e.target.value); setShowSuggestions(true); }} onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); addItem(suggestions[0]); } if (e.key === "Escape") setShowSuggestions(false); }}/><button onMouseDown={(e) => e.preventDefault()} onClick={() => addItem(suggestions[0])}>Add item</button></div>{showSuggestions && suggestions.length > 0 && <div className="autocomplete-menu">{suggestions.map((item) => { const price = best(item); return <button key={item.id} onMouseDown={(e) => e.preventDefault()} onClick={() => addItem(item)}><span className="food-icon">{icons[item.category] ?? icons.Other}</span><span><strong>{item.name}</strong><small>{item.unit || item.category}</small></span>{price && <b>{money(price.amount)} at {price.store}</b>}<em>+ Add</em></button>; })}</div>}</div>}
+            {activeTab === "items" && <div className="catalog-create"><div><strong>Add a food to the catalog</strong><small>Keep it here for future lists, even if you don’t need it today.</small></div><div className="catalog-create-input"><input placeholder="Food item name" value={newCatalogItem} onChange={(e) => setNewCatalogItem(e.target.value)} onKeyDown={(e) => e.key === "Enter" && addCatalogItem()}/><button onClick={addCatalogItem}><Icon name="plus" size={15}/> Add item</button></div></div>}
             {showHistory && <History items={showHistory === "all" ? items : items.filter((i) => i.id === showHistory)} purchasedItems={purchasedItems} onClose={() => setShowHistory(null)}/>}
           </div>
 
