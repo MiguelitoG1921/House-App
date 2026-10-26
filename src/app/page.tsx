@@ -1,10 +1,25 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import type { FormEvent } from "react";
 
 type Store = "Costco" | "Walmart" | "Trader Joe's" | "Target";
 type Price = { store: Store; amount: number; date: string };
 type Item = { id: string; name: string; category: string; unit: string; prices: Price[]; purchases?: Price[]; checked: boolean };
+type SharedSnapshot = { items: Item[]; catalogOnly: Item[]; purchasedItems: Item[]; deletedCatalogNames: string[] };
+
+function readBrowserSnapshot(): SharedSnapshot {
+  const read = <T,>(key: string, fallback: T): T => {
+    try { const value = localStorage.getItem(key); return value ? JSON.parse(value) as T : fallback; } catch { return fallback; }
+  };
+  const oldArchive = read<Item[]>("common-table-archive-v1", []);
+  return {
+    items: read<Item[]>("common-table-groceries-v1", initialItems),
+    catalogOnly: read<Item[]>("greenhouse-catalog-v1", []),
+    purchasedItems: read<Item[]>("greenhouse-purchased-v1", oldArchive.map((item) => ({ ...item, purchases: item.purchases ?? item.prices.slice(-1) }))),
+    deletedCatalogNames: read<string[]>("greenhouse-deleted-catalog-v1", []),
+  };
+}
 
 const initialItems: Item[] = [
   { id: "1", name: "Organic whole milk", category: "Dairy", unit: "½ gallon", checked: false, prices: [{ store: "Costco", amount: 3.49, date: "2026-10-22" }, { store: "Walmart", amount: 3.78, date: "2026-10-20" }, { store: "Target", amount: 4.29, date: "2026-10-12" }] },
@@ -42,6 +57,18 @@ export default function Home() {
   const [deletedCatalogNames, setDeletedCatalogNames] = useState<string[]>([]);
   const [purchasedItems, setPurchasedItems] = useState<Item[]>([]);
   const [storageReady, setStorageReady] = useState(false);
+  const [sharedConfigured, setSharedConfigured] = useState(false);
+  const [sharedAuthorized, setSharedAuthorized] = useState(false);
+  const [sharedReady, setSharedReady] = useState(false);
+  const [syncStatus, setSyncStatus] = useState<"checking" | "local" | "sign-in" | "connecting" | "synced" | "saving" | "offline">("checking");
+  const [syncRevision, setSyncRevision] = useState(0);
+  const [syncRetry, setSyncRetry] = useState(0);
+  const [accessCode, setAccessCode] = useState("");
+  const [accessError, setAccessError] = useState("");
+  const lastSyncedSnapshot = useRef("");
+  const revisionRef = useRef(0);
+  const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const pendingSave = useRef(false);
   const [catalogSort, setCatalogSort] = useState<"name" | "price-low" | "price-high" | "times">("name");
   const [selectedStore, setSelectedStore] = useState<Store>("Walmart");
   const [query, setQuery] = useState("");
@@ -54,24 +81,128 @@ export default function Home() {
   const [notice, setNotice] = useState("");
 
   useEffect(() => {
-    const saved = localStorage.getItem("common-table-groceries-v1");
-    if (saved) { try { setItems(JSON.parse(saved) as Item[]); } catch { /* use starter list */ } }
-    const bought = localStorage.getItem("greenhouse-purchased-v1");
-    if (bought) { try { setPurchasedItems(JSON.parse(bought) as Item[]); } catch { /* use empty purchase list */ } }
-    else {
-      const legacy = JSON.parse(localStorage.getItem("common-table-archive-v1") ?? "[]") as Item[];
-      setPurchasedItems(legacy.map((item) => ({ ...item, purchases: item.purchases ?? item.prices.slice(-1) })));
-    }
-    const catalog = localStorage.getItem("greenhouse-catalog-v1");
-    if (catalog) { try { setCatalogOnly(JSON.parse(catalog) as Item[]); } catch { /* use shared list items */ } }
-    const deleted = localStorage.getItem("greenhouse-deleted-catalog-v1");
-    if (deleted) { try { setDeletedCatalogNames(JSON.parse(deleted) as string[]); } catch { /* use visible catalog items */ } }
+    const browser = readBrowserSnapshot();
+    setItems(browser.items);
+    setCatalogOnly(browser.catalogOnly);
+    setPurchasedItems(browser.purchasedItems);
+    setDeletedCatalogNames(browser.deletedCatalogNames);
     setStorageReady(true);
   }, []);
   useEffect(() => { if (storageReady) localStorage.setItem("common-table-groceries-v1", JSON.stringify(items)); }, [items, storageReady]);
   useEffect(() => { if (storageReady) localStorage.setItem("greenhouse-purchased-v1", JSON.stringify(purchasedItems)); }, [purchasedItems, storageReady]);
   useEffect(() => { if (storageReady) localStorage.setItem("greenhouse-catalog-v1", JSON.stringify(catalogOnly)); }, [catalogOnly, storageReady]);
   useEffect(() => { if (storageReady) localStorage.setItem("greenhouse-deleted-catalog-v1", JSON.stringify(deletedCatalogNames)); }, [deletedCatalogNames, storageReady]);
+
+  function applySharedSnapshot(snapshot: SharedSnapshot, revision: number) {
+    const serialized = JSON.stringify(snapshot);
+    lastSyncedSnapshot.current = serialized;
+    revisionRef.current = revision;
+    setSyncRevision(revision);
+    setItems(snapshot.items);
+    setCatalogOnly(snapshot.catalogOnly);
+    setPurchasedItems(snapshot.purchasedItems);
+    setDeletedCatalogNames(snapshot.deletedCatalogNames);
+    setSharedReady(true);
+    setSyncStatus("synced");
+  }
+
+  async function initializeOrLoadSharedData() {
+    const response = await fetch("/api/household", { cache: "no-store" });
+    if (!response.ok) throw new Error("Could not load Greenhouse’s shared data.");
+    const result = await response.json() as { state: SharedSnapshot | null; revision: number; initialized: boolean };
+    if (result.initialized && result.state) {
+      applySharedSnapshot(result.state, result.revision);
+      return;
+    }
+    const local = readBrowserSnapshot();
+    const saved = await fetch("/api/household", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ state: local, revision: 0 }) });
+    const written = await saved.json() as { ok?: boolean; revision?: number; state?: SharedSnapshot | null };
+    if (saved.status === 409 && written.state) {
+      applySharedSnapshot(written.state, written.revision ?? 0);
+      return;
+    }
+    if (!saved.ok || !written.ok) throw new Error("Could not initialize Greenhouse’s shared list.");
+    applySharedSnapshot(local, written.revision ?? 1);
+  }
+
+  useEffect(() => {
+    if (!storageReady) return;
+    let cancelled = false;
+    void fetch("/api/household/session", { cache: "no-store" }).then(async (response) => {
+      const session = await response.json() as { configured: boolean; authorized: boolean };
+      if (cancelled) return;
+      setSharedConfigured(session.configured);
+      if (!session.configured) { setSyncStatus("local"); return; }
+      if (!session.authorized) { setSyncStatus("sign-in"); return; }
+      setSharedAuthorized(true);
+      setSyncStatus("connecting");
+      await initializeOrLoadSharedData();
+    }).catch(() => { if (!cancelled) setSyncStatus("offline"); });
+    return () => { cancelled = true; };
+  }, [storageReady]);
+
+  async function connectHousehold(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setAccessError("");
+    setSyncStatus("connecting");
+    try {
+      const response = await fetch("/api/household/session", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ code: accessCode }) });
+      const result = await response.json() as { error?: string };
+      if (!response.ok) throw new Error(result.error ?? "Could not connect to Greenhouse.");
+      setSharedAuthorized(true);
+      await initializeOrLoadSharedData();
+      setAccessCode("");
+    } catch (error) {
+      setSyncStatus("sign-in");
+      setAccessError(error instanceof Error ? error.message : "Could not connect to Greenhouse.");
+    }
+  }
+
+  const sharedSnapshot = JSON.stringify({ items, catalogOnly, purchasedItems, deletedCatalogNames });
+  useEffect(() => {
+    if (!sharedAuthorized || !sharedReady || sharedSnapshot === lastSyncedSnapshot.current) return;
+    pendingSave.current = true;
+    setSyncStatus("saving");
+    if (saveTimer.current) clearTimeout(saveTimer.current);
+    saveTimer.current = setTimeout(() => {
+      void fetch("/api/household", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ state: JSON.parse(sharedSnapshot) as SharedSnapshot, revision: revisionRef.current }) })
+        .then(async (response) => {
+          const result = await response.json() as { ok?: boolean; revision?: number; state?: SharedSnapshot | null };
+          if (response.status === 409 && result.state) {
+            applySharedSnapshot(result.state, result.revision ?? 0);
+            setNotice("Another member updated Greenhouse at the same time. The latest shared list is now shown.");
+            window.setTimeout(() => setNotice(""), 5000);
+            return;
+          }
+          if (!response.ok || !result.ok) throw new Error("Save failed");
+          revisionRef.current = result.revision ?? revisionRef.current + 1;
+          setSyncRevision(revisionRef.current);
+          lastSyncedSnapshot.current = sharedSnapshot;
+          pendingSave.current = false;
+          setSyncStatus("synced");
+        })
+        .catch(() => {
+          pendingSave.current = false;
+          setSyncStatus("offline");
+          window.setTimeout(() => setSyncRetry((retry) => retry + 1), 5000);
+        });
+    }, 400);
+    return () => { if (saveTimer.current) clearTimeout(saveTimer.current); };
+  }, [sharedSnapshot, sharedAuthorized, sharedReady, syncRetry]);
+
+  useEffect(() => {
+    if (!sharedAuthorized || !sharedReady) return;
+    const poll = setInterval(() => {
+      if (pendingSave.current || sharedSnapshot !== lastSyncedSnapshot.current) return;
+      void fetch("/api/household", { cache: "no-store" }).then(async (response) => {
+        if (!response.ok) throw new Error("Sync unavailable");
+        const result = await response.json() as { state: SharedSnapshot | null; revision: number; initialized: boolean };
+        if (result.state && result.revision !== revisionRef.current) applySharedSnapshot(result.state, result.revision);
+        else setSyncStatus("synced");
+      }).catch(() => setSyncStatus("offline"));
+    }, 5000);
+    return () => clearInterval(poll);
+  }, [sharedAuthorized, sharedReady, sharedSnapshot]);
 
   const visibleItems = useMemo(() => items.filter((item) => item.name.toLowerCase().includes(query.toLowerCase())), [items, query]);
   const groups = useMemo(() => {
@@ -198,7 +329,9 @@ export default function Home() {
       </aside>
 
       <section className="main-area" id="top">
-        <header className="topbar"><div className="breadcrumb">Greenhouse <span>/</span> <strong>{activeTab === "list" ? "Grocery list" : activeTab === "prices" ? "Price comparison" : "Items"}</strong></div><div className="top-actions"><span className="sync-label"><i/> Up to date</span><button className="avatar" aria-label="Your profile">E</button></div></header>
+        <header className="topbar"><div className="breadcrumb">Greenhouse <span>/</span> <strong>{activeTab === "list" ? "Grocery list" : activeTab === "prices" ? "Price comparison" : "Items"}</strong></div><div className="top-actions"><span className={`sync-label ${syncStatus === "offline" ? "sync-offline" : ""}`}><i/> {syncStatus === "synced" ? "Synced" : syncStatus === "saving" || syncStatus === "connecting" ? "Syncing…" : syncStatus === "offline" ? "Sync paused" : sharedConfigured ? "Connect to sync" : "This device only"}</span><button className="avatar" aria-label="Your profile">E</button></div></header>
+        {!sharedConfigured && <div className="sync-banner"><strong>Changes are saved on this device only.</strong><span>To sync Greenhouse across phones and computers, configure the shared database and household access code.</span></div>}
+        {sharedConfigured && syncStatus === "offline" && <div className="sync-banner"><strong>Can’t reach Greenhouse right now.</strong><span>Your changes are saved on this device and will sync when the connection returns.</span></div>}
         <div className="content">
           <div className="welcome-row"><div><div className="eyebrow">GREENHOUSE COOPERATIVE · 12 MEMBERS</div><h1>{activeTab === "list" ? "The grocery list" : activeTab === "prices" ? "Price comparison" : "Household items"}</h1><p>{activeTab === "list" ? "Good food, good prices, good neighbors." : activeTab === "prices" ? "See how every store stacks up before you head out." : "Your house’s food catalog, with prices and purchase history."}</p></div><label className="upload-button"><Icon name="upload" size={17}/> Upload prices<input type="file" accept=".csv,text/csv" onChange={(e) => importPrices(e.target.files?.[0])}/></label></div>
 
@@ -225,11 +358,12 @@ export default function Home() {
             <div className="activity-card"><div className="activity-heading"><h3>Recent price updates</h3><button onClick={() => setShowHistory("all")}>View all</button></div><div className="activity-item"><span className="activity-avatar avatar-lilac">M</span><div><strong>Maya added a price</strong><small>Organic whole milk · Costco</small></div><time>2h</time></div><div className="activity-item"><span className="activity-avatar avatar-sky">J</span><div><strong>Jordan updated a price</strong><small>Avocados · Walmart</small></div><time>Yesterday</time></div><div className="activity-item"><span className="activity-avatar avatar-rose">A</span><div><strong>Alex added a price</strong><small>Sourdough bread · Trader Joe's</small></div><time>Oct 16</time></div></div>
             <div className="tip-card"><span className="tip-sun">✳</span><div><strong>A little tip</strong><p>Upload a CSV after your next shopping trip to keep everyone’s prices fresh.</p></div></div></aside>
           </div>
-          <footer className="page-footer"><span>Made for sharing meals and making ends meet.</span><span><i/> All changes saved automatically</span></footer>
+          <footer className="page-footer"><span>Made for sharing meals and making ends meet.</span><span><i/> {sharedAuthorized ? "Shared with Greenhouse" : "Saved on this device"}</span></footer>
         </div>
       </section>
 
       {modal && <div className="modal-backdrop" onClick={(e) => e.target === e.currentTarget && setModal(null)}><section className="purchase-modal"><button className="modal-close" onClick={() => setModal(null)}>×</button><span className="modal-icon">{modal.bought ? "🛍️" : "📝"}</span><h2>{modal.bought ? `Did you buy ${modal.item.name}?` : `Remove ${modal.item.name}?`}</h2><p>{modal.bought ? "If you picked it up, save the price for the whole house." : "This item will be removed from the shared list."}</p>{modal.bought && <><label className="field-label">Store<select value={purchase.store} onChange={(e) => setPurchase({ ...purchase, store: e.target.value as Store })}>{stores.map((s) => <option key={s}>{s}</option>)}</select></label><label className="field-label">What did it cost?<span className="amount-input"><span>$</span><input type="number" min="0.01" step="0.01" placeholder="0.00" value={purchase.amount} onChange={(e) => setPurchase({ ...purchase, amount: e.target.value })}/></span></label></>}<div className="modal-actions">{modal.bought ? <button className="quiet-button" onClick={() => setModal({ ...modal, bought: false })}>Not bought</button> : <button className="quiet-button" onClick={() => setModal(null)}>Cancel</button>}<button className="primary-button" onClick={confirmRemoval}>{modal.bought ? "Save & remove" : "Remove item"}</button></div></section></div>}
+      {sharedConfigured && !sharedAuthorized && <div className="modal-backdrop access-backdrop"><section className="purchase-modal access-modal"><span className="modal-icon"><Icon name="history"/></span><h2>Connect to Greenhouse</h2><p>Enter the household access code to load the shared grocery list, items, prices, and purchase history on this device.</p><form onSubmit={connectHousehold}><label className="field-label">Household access code<input className="access-code-input" type="password" autoComplete="current-password" value={accessCode} onChange={(e) => setAccessCode(e.target.value)} required/></label>{accessError && <p className="access-error">{accessError}</p>}<button className="primary-button access-submit" type="submit" disabled={syncStatus === "connecting"}>{syncStatus === "connecting" ? "Connecting…" : "Connect to shared data"}</button></form></section></div>}
       {notice && <div className="toast">✓ &nbsp;{notice}</div>}
     </main>
   );
