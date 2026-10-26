@@ -4,7 +4,7 @@ import { useEffect, useMemo, useState } from "react";
 
 type Store = "Costco" | "Walmart" | "Trader Joe's" | "Target";
 type Price = { store: Store; amount: number; date: string };
-type Item = { id: string; name: string; category: string; unit: string; prices: Price[]; checked: boolean };
+type Item = { id: string; name: string; category: string; unit: string; prices: Price[]; purchases?: Price[]; checked: boolean };
 
 const initialItems: Item[] = [
   { id: "1", name: "Organic whole milk", category: "Dairy", unit: "½ gallon", checked: false, prices: [{ store: "Costco", amount: 3.49, date: "2026-10-22" }, { store: "Walmart", amount: 3.78, date: "2026-10-20" }, { store: "Target", amount: 4.29, date: "2026-10-12" }] },
@@ -37,7 +37,10 @@ function Icon({ name, size = 18 }: { name: string; size?: number }) {
 
 export default function Home() {
   const [items, setItems] = useState<Item[]>(initialItems);
-  const [activeTab, setActiveTab] = useState<"list" | "prices">("list");
+  const [activeTab, setActiveTab] = useState<"list" | "prices" | "purchased">("list");
+  const [purchasedItems, setPurchasedItems] = useState<Item[]>([]);
+  const [storageReady, setStorageReady] = useState(false);
+  const [purchaseSort, setPurchaseSort] = useState<"recent" | "price-low" | "price-high" | "times">("recent");
   const [selectedStore, setSelectedStore] = useState<Store>("Walmart");
   const [query, setQuery] = useState("");
   const [newItem, setNewItem] = useState("");
@@ -49,8 +52,16 @@ export default function Home() {
   useEffect(() => {
     const saved = localStorage.getItem("common-table-groceries-v1");
     if (saved) { try { setItems(JSON.parse(saved) as Item[]); } catch { /* use starter list */ } }
+    const bought = localStorage.getItem("greenhouse-purchased-v1");
+    if (bought) { try { setPurchasedItems(JSON.parse(bought) as Item[]); } catch { /* use empty purchase list */ } }
+    else {
+      const legacy = JSON.parse(localStorage.getItem("common-table-archive-v1") ?? "[]") as Item[];
+      setPurchasedItems(legacy.map((item) => ({ ...item, purchases: item.purchases ?? item.prices.slice(-1) })));
+    }
+    setStorageReady(true);
   }, []);
-  useEffect(() => { localStorage.setItem("common-table-groceries-v1", JSON.stringify(items)); }, [items]);
+  useEffect(() => { if (storageReady) localStorage.setItem("common-table-groceries-v1", JSON.stringify(items)); }, [items, storageReady]);
+  useEffect(() => { if (storageReady) localStorage.setItem("greenhouse-purchased-v1", JSON.stringify(purchasedItems)); }, [purchasedItems, storageReady]);
 
   const visibleItems = useMemo(() => items.filter((item) => item.name.toLowerCase().includes(query.toLowerCase())), [items, query]);
   const groups = useMemo(() => {
@@ -62,6 +73,13 @@ export default function Home() {
     return [...map.entries()].sort((a, b) => a[0] === "No price yet" ? 1 : b[0] === "No price yet" ? -1 : a[0].localeCompare(b[0]));
   }, [visibleItems]);
   const tracked = items.filter((item) => item.prices.length > 0).length;
+  const visiblePurchased = useMemo(() => purchasedItems.filter((item) => item.name.toLowerCase().includes(query.toLowerCase())).sort((a, b) => {
+    const average = (item: Item) => { const purchases = item.purchases ?? []; return purchases.length ? purchases.reduce((sum, p) => sum + p.amount, 0) / purchases.length : Infinity; };
+    if (purchaseSort === "times") return (b.purchases?.length ?? 0) - (a.purchases?.length ?? 0);
+    if (purchaseSort === "price-low") return average(a) - average(b);
+    if (purchaseSort === "price-high") return average(b) - average(a);
+    return (b.purchases?.at(-1)?.date ?? "").localeCompare(a.purchases?.at(-1)?.date ?? "");
+  }), [purchasedItems, query, purchaseSort]);
 
   function addItem() {
     const name = newItem.trim();
@@ -77,10 +95,12 @@ export default function Home() {
     if (!modal) return;
     if (modal.bought && purchase.amount && Number(purchase.amount) > 0) {
       setItems((list) => list.filter((item) => item.id !== modal.item.id));
-      // Keep a removed purchase in a separate history archive so it remains available.
-      const archive = JSON.parse(localStorage.getItem("common-table-archive-v1") ?? "[]") as Item[];
-      archive.unshift({ ...modal.item, prices: [...modal.item.prices, { store: purchase.store, amount: Number(purchase.amount), date: new Date().toISOString().slice(0, 10) }] });
-      localStorage.setItem("common-table-archive-v1", JSON.stringify(archive));
+      const purchaseEntry = { store: purchase.store, amount: Number(purchase.amount), date: new Date().toISOString().slice(0, 10) };
+      setPurchasedItems((list) => {
+        const existing = list.find((entry) => entry.name.toLowerCase() === modal.item.name.toLowerCase());
+        if (existing) return list.map((entry) => entry.id === existing.id ? { ...entry, prices: [...entry.prices, purchaseEntry], purchases: [...(entry.purchases ?? []), purchaseEntry] } : entry);
+        return [{ ...modal.item, prices: [...modal.item.prices, purchaseEntry], purchases: [purchaseEntry] }, ...list];
+      });
       setNotice(`${modal.item.name} purchase saved`);
     } else {
       setItems((list) => list.filter((item) => item.id !== modal.item.id));
@@ -114,33 +134,36 @@ export default function Home() {
       <aside className="sidebar">
         <a className="brand" href="#top"><span className="brand-icon">c</span><span>common<span className="brand-light">table</span><small>YOUR HOUSEHOLD, IN SYNC</small></span></a>
         <div className="side-label">YOUR HOUSE</div>
-        <div className="house-card"><span className="house-icon">⌂</span><span><strong>Maple Street House</strong><small>12 members</small></span><Icon name="chevron" size={15}/></div>
+        <div className="house-card"><span className="house-icon">⌂</span><span><strong>Greenhouse</strong><small>12 members</small></span><Icon name="chevron" size={15}/></div>
         <div className="side-label nav-label">WORKSPACE</div>
         <button className={`nav-item ${activeTab === "list" ? "active" : ""}`} onClick={() => setActiveTab("list")}><Icon name="cart"/><span>Grocery list</span><b>{items.length}</b></button>
         <button className={`nav-item ${activeTab === "prices" ? "active" : ""}`} onClick={() => setActiveTab("prices")}><Icon name="chart"/><span>Price comparison</span></button>
+        <button className={`nav-item ${activeTab === "purchased" ? "active" : ""}`} onClick={() => setActiveTab("purchased")}><Icon name="history"/><span>Purchased items</span><b>{purchasedItems.length}</b></button>
         <button className="nav-item" onClick={() => setShowHistory(showHistory ? null : "all")}><Icon name="history"/><span>Purchase history</span></button>
         <div className="sidebar-bottom"><div className="member-stack"><span>J</span><span>M</span><span>A</span><span>+9</span></div><div className="member-copy"><strong>12 members</strong><small>Shopping together</small></div><span className="presence-dot"/></div>
       </aside>
 
       <section className="main-area" id="top">
-        <header className="topbar"><div className="breadcrumb">Maple Street House <span>/</span> <strong>{activeTab === "list" ? "Grocery list" : "Price comparison"}</strong></div><div className="top-actions"><span className="sync-label"><i/> Up to date</span><button className="avatar" aria-label="Your profile">E</button></div></header>
+        <header className="topbar"><div className="breadcrumb">Greenhouse <span>/</span> <strong>{activeTab === "list" ? "Grocery list" : activeTab === "prices" ? "Price comparison" : "Purchased items"}</strong></div><div className="top-actions"><span className="sync-label"><i/> Up to date</span><button className="avatar" aria-label="Your profile">E</button></div></header>
         <div className="content">
-          <div className="welcome-row"><div><div className="eyebrow">MONDAY, OCTOBER 26, 2026</div><h1>{activeTab === "list" ? "The grocery list" : "Price comparison"}</h1><p>{activeTab === "list" ? "Good food, good prices, good neighbors." : "See how every store stacks up before you head out."}</p></div><label className="upload-button"><Icon name="upload" size={17}/> Upload prices<input type="file" accept=".csv,text/csv" onChange={(e) => importPrices(e.target.files?.[0])}/></label></div>
+          <div className="welcome-row"><div><div className="eyebrow">GREENHOUSE COOPERATIVE · 12 MEMBERS</div><h1>{activeTab === "list" ? "The grocery list" : activeTab === "prices" ? "Price comparison" : "Our pantry, purchased"}</h1><p>{activeTab === "list" ? "Good food, good prices, good neighbors." : activeTab === "prices" ? "See how every store stacks up before you head out." : "Everything the house has bought, all in one place."}</p></div><label className="upload-button"><Icon name="upload" size={17}/> Upload prices<input type="file" accept=".csv,text/csv" onChange={(e) => importPrices(e.target.files?.[0])}/></label></div>
 
           <div className="summary-grid"><div className="summary-card"><span className="summary-icon mint"><Icon name="cart"/></span><div><small>ON THE LIST</small><strong>{items.length} <em>items</em></strong></div></div><div className="summary-card"><span className="summary-icon peach"><Icon name="chart"/></span><div><small>PRICES TRACKED</small><strong>{tracked} <em>of {items.length} items</em></strong></div></div><div className="summary-card savings-card"><span className="summary-icon yellow"><Icon name="money"/></span><div><small>BEST SHOPPING ROUTE</small><strong>3 <em>stores this week</em></strong></div><span className="sparkline">⌁</span></div></div>
 
           <div className="workspace-grid"><div className="list-panel panel">
-            <div className="panel-heading"><div><h2>{activeTab === "list" ? "Things to pick up" : "Compare your stores"}</h2><p>{activeTab === "list" ? "Grouped by where each item costs least" : `Showing prices at ${selectedStore}`}</p></div><button className="icon-button" title="Purchase history" onClick={() => setShowHistory(showHistory ? null : "all")}><Icon name="history" size={17}/></button></div>
+            <div className="panel-heading"><div><h2>{activeTab === "list" ? "Things to pick up" : activeTab === "prices" ? "Compare your stores" : "Purchased by the house"}</h2><p>{activeTab === "list" ? "Grouped by where each item costs least" : activeTab === "prices" ? `Showing prices at ${selectedStore}` : `${purchasedItems.length} different items bought so far`}</p></div><button className="icon-button" title="Purchase history" onClick={() => setShowHistory(showHistory ? null : "all")}><Icon name="history" size={17}/></button></div>
             <div className="list-toolbar"><label className="search-box"><Icon name="search" size={16}/><input placeholder="Find something…" value={query} onChange={(e) => setQuery(e.target.value)}/><kbd>⌘ K</kbd></label><button className="filter-button">All items <Icon name="chevron" size={14}/></button></div>
 
             {activeTab === "prices" && <div className="store-tabs">{stores.map((store) => <button key={store} className={selectedStore === store ? "selected" : ""} onClick={() => setSelectedStore(store)}>{store}</button>)}</div>}
+            {activeTab === "purchased" && <div className="sort-bar"><span>Sort by</span><select value={purchaseSort} onChange={(e) => setPurchaseSort(e.target.value as typeof purchaseSort)}><option value="recent">Recently bought</option><option value="price-low">Average price: low to high</option><option value="price-high">Average price: high to low</option><option value="times">Times bought</option></select></div>}
             <div className="list-body">
-              {activeTab === "list" ? groups.map(([store, grouped]) => <section className="store-group" key={store}><div className="group-header"><span className="store-marker">{store === "Costco" ? "C" : store === "Walmart" ? "W" : store === "Target" ? "T" : store === "Trader Joe's" ? "TJ" : "·"}</span><strong>{store === "No price yet" ? "Still need a price" : `Cheapest at ${store}`}</strong><span className="group-count">{grouped.length}</span><span className="group-rule"/></div>{grouped.map((item) => { const cheapest = best(item); return <article className="grocery-row" key={item.id}><button className="check-box" aria-label={`Mark ${item.name} bought`} onClick={() => removeItem(item)}><span/></button><div className="food-icon">{icons[item.category] ?? icons.Other}</div><div className="item-main"><strong>{item.name}</strong><small>{item.unit || item.category}</small></div>{cheapest ? <div className="best-price"><strong>{money(cheapest.amount)}</strong><small>best price</small></div> : <div className="best-price"><strong>—</strong><small>add a price</small></div>}<button className="compare-link" onClick={() => { setSelectedStore("Walmart"); setActiveTab("prices"); }}>Compare</button><button className="row-menu" title="Remove item" onClick={() => setModal({ item, bought: false })}><Icon name="trash" size={15}/></button></article>; })}</section>) : visibleItems.map((item) => { const cheapest = best(item); const price = item.prices.filter((p) => p.store === selectedStore).sort((a, b) => a.amount - b.amount)[0]; return <article className="grocery-row compare-row" key={item.id}><div className="food-icon">{icons[item.category] ?? icons.Other}</div><div className="item-main"><strong>{item.name}</strong><small>{item.unit || item.category}</small></div><div className="best-price"><strong>{price ? money(price.amount) : "—"}</strong><small>{price ? `at ${selectedStore}` : "no price yet"}</small></div>{price && cheapest && cheapest.store !== selectedStore ? <span className="price-diff">+{money(price.amount - cheapest.amount)} vs best</span> : price ? <span className="best-tag">Best price</span> : <span className="price-diff">Not tracked</span>}<button className="row-menu" title="View price history" onClick={() => setShowHistory(showHistory === item.id ? null : item.id)}><Icon name="history" size={15}/></button></article>; })}
+              {activeTab === "list" ? groups.map(([store, grouped]) => <section className="store-group" key={store}><div className="group-header"><span className="store-marker">{store === "Costco" ? "C" : store === "Walmart" ? "W" : store === "Target" ? "T" : store === "Trader Joe's" ? "TJ" : "·"}</span><strong>{store === "No price yet" ? "Still need a price" : `Cheapest at ${store}`}</strong><span className="group-count">{grouped.length}</span><span className="group-rule"/></div>{grouped.map((item) => { const cheapest = best(item); return <article className="grocery-row" key={item.id}><button className="check-box" aria-label={`Mark ${item.name} bought`} onClick={() => removeItem(item)}><span/></button><div className="food-icon">{icons[item.category] ?? icons.Other}</div><div className="item-main"><strong>{item.name}</strong><small>{item.unit || item.category}</small></div>{cheapest ? <div className="best-price"><strong>{money(cheapest.amount)}</strong><small>best price</small></div> : <div className="best-price"><strong>—</strong><small>add a price</small></div>}<button className="compare-link" onClick={() => { setSelectedStore("Walmart"); setActiveTab("prices"); }}>Compare</button><button className="row-menu" title="Remove item" onClick={() => setModal({ item, bought: false })}><Icon name="trash" size={15}/></button></article>; })}</section>) : activeTab === "prices" ? visibleItems.map((item) => { const cheapest = best(item); const price = item.prices.filter((p) => p.store === selectedStore).sort((a, b) => a.amount - b.amount)[0]; return <article className="grocery-row compare-row" key={item.id}><div className="food-icon">{icons[item.category] ?? icons.Other}</div><div className="item-main"><strong>{item.name}</strong><small>{item.unit || item.category}</small></div><div className="best-price"><strong>{price ? money(price.amount) : "—"}</strong><small>{price ? `at ${selectedStore}` : "no price yet"}</small></div>{price && cheapest && cheapest.store !== selectedStore ? <span className="price-diff">+{money(price.amount - cheapest.amount)} vs best</span> : price ? <span className="best-tag">Best price</span> : <span className="price-diff">Not tracked</span>}<button className="row-menu" title="View price history" onClick={() => setShowHistory(showHistory === item.id ? null : item.id)}><Icon name="history" size={15}/></button></article>; }) : visiblePurchased.map((item) => { const purchases = item.purchases ?? []; const average = purchases.length ? purchases.reduce((sum, entry) => sum + entry.amount, 0) / purchases.length : 0; const latest = purchases.at(-1); return <article className="grocery-row compare-row" key={item.id}><div className="food-icon">{icons[item.category] ?? icons.Other}</div><div className="item-main"><strong>{item.name}</strong><small>{item.unit || item.category} · Last bought {latest?.date ?? "—"}</small></div><div className="best-price"><strong>{money(average)}</strong><small>average paid</small></div><span className="best-tag">{purchases.length} {purchases.length === 1 ? "purchase" : "purchases"}</span><button className="row-menu" title="View price history" onClick={() => setShowHistory(showHistory === item.id ? null : item.id)}><Icon name="history" size={15}/></button></article>; })}
+              {activeTab === "purchased" && visiblePurchased.length === 0 && <div className="empty-state">No purchased items yet. Mark something as bought from your grocery list to start the pantry history.</div>}
               {visibleItems.length === 0 && <div className="empty-state">No items found. Try another search.</div>}
             </div>
 
             {activeTab === "list" && <div className="add-item"><span className="add-plus"><Icon name="plus" size={16}/></span><input placeholder="Add something to the list…" value={newItem} onChange={(e) => setNewItem(e.target.value)} onKeyDown={(e) => e.key === "Enter" && addItem()}/><button onClick={addItem}>Add item</button></div>}
-            {showHistory && <History items={showHistory === "all" ? items : items.filter((i) => i.id === showHistory)} onClose={() => setShowHistory(null)}/>}
+            {showHistory && <History items={showHistory === "all" ? items : items.filter((i) => i.id === showHistory)} purchasedItems={purchasedItems} onClose={() => setShowHistory(null)}/>}
           </div>
 
             <aside className="right-column"><div className="route-card"><div className="route-header"><span className="route-icon"><Icon name="cart" size={16}/></span><div><h3>Smart shopping route</h3><p>Fewer stops, better prices</p></div><span className="route-badge">THIS WEEK</span></div><div className="route-list"><div className="route-stop"><span className="route-num">1</span><span className="route-store-logo costco">C</span><span className="route-name"><strong>Costco</strong><small>5 items · save up to $4.80</small></span><span className="route-chevron">›</span></div><div className="route-stop"><span className="route-num">2</span><span className="route-store-logo walmart">W</span><span className="route-name"><strong>Walmart</strong><small>2 items · save up to $1.14</small></span><span className="route-chevron">›</span></div><div className="route-stop"><span className="route-num">3</span><span className="route-store-logo trader">TJ</span><span className="route-name"><strong>Trader Joe's</strong><small>1 item · save up to $0.49</small></span><span className="route-chevron">›</span></div></div><button className="route-action" onClick={() => setActiveTab("prices")}>See all store prices <span>→</span></button></div>
@@ -157,9 +180,8 @@ export default function Home() {
   );
 }
 
-function History({ items, onClose }: { items: Item[]; onClose: () => void }) {
-  const archived = typeof window !== "undefined" ? JSON.parse(localStorage.getItem("common-table-archive-v1") ?? "[]") as Item[] : [];
-  const all = [...items, ...archived];
+function History({ items, purchasedItems, onClose }: { items: Item[]; purchasedItems: Item[]; onClose: () => void }) {
+  const all = [...items, ...purchasedItems];
   const prices = all.flatMap((item) => item.prices.map((price) => ({ ...price, name: item.name }))).sort((a, b) => b.date.localeCompare(a.date));
   return <div className="history-popover"><div className="history-head"><strong>Purchase history</strong><button onClick={onClose}>×</button></div>{prices.slice(0, 12).map((p, i) => <div className="history-line" key={`${p.name}-${p.store}-${p.date}-${i}`}><span><strong>{p.name}</strong><small>{p.store} · {p.date}</small></span><b>{money(p.amount)}</b></div>)}{prices.length === 0 && <p className="history-empty">Your household’s purchases will show up here.</p>}</div>;
 }

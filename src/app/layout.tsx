@@ -2,7 +2,7 @@ import type { Metadata } from "next";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "Common Table | Maple Street House",
+  title: "Greenhouse | Cooperative Groceries",
   description: "A shared grocery list and price book for your household.",
 };
 
