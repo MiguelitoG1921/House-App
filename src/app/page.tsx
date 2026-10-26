@@ -39,6 +39,7 @@ export default function Home() {
   const [items, setItems] = useState<Item[]>(initialItems);
   const [activeTab, setActiveTab] = useState<"list" | "prices" | "items">("list");
   const [catalogOnly, setCatalogOnly] = useState<Item[]>([]);
+  const [deletedCatalogNames, setDeletedCatalogNames] = useState<string[]>([]);
   const [purchasedItems, setPurchasedItems] = useState<Item[]>([]);
   const [storageReady, setStorageReady] = useState(false);
   const [catalogSort, setCatalogSort] = useState<"name" | "price-low" | "price-high" | "times">("name");
@@ -63,11 +64,14 @@ export default function Home() {
     }
     const catalog = localStorage.getItem("greenhouse-catalog-v1");
     if (catalog) { try { setCatalogOnly(JSON.parse(catalog) as Item[]); } catch { /* use shared list items */ } }
+    const deleted = localStorage.getItem("greenhouse-deleted-catalog-v1");
+    if (deleted) { try { setDeletedCatalogNames(JSON.parse(deleted) as string[]); } catch { /* use visible catalog items */ } }
     setStorageReady(true);
   }, []);
   useEffect(() => { if (storageReady) localStorage.setItem("common-table-groceries-v1", JSON.stringify(items)); }, [items, storageReady]);
   useEffect(() => { if (storageReady) localStorage.setItem("greenhouse-purchased-v1", JSON.stringify(purchasedItems)); }, [purchasedItems, storageReady]);
   useEffect(() => { if (storageReady) localStorage.setItem("greenhouse-catalog-v1", JSON.stringify(catalogOnly)); }, [catalogOnly, storageReady]);
+  useEffect(() => { if (storageReady) localStorage.setItem("greenhouse-deleted-catalog-v1", JSON.stringify(deletedCatalogNames)); }, [deletedCatalogNames, storageReady]);
 
   const visibleItems = useMemo(() => items.filter((item) => item.name.toLowerCase().includes(query.toLowerCase())), [items, query]);
   const groups = useMemo(() => {
@@ -87,8 +91,8 @@ export default function Home() {
       const prior = unique.get(key);
       unique.set(key, prior ? { ...prior, ...item, prices: item.prices.length ? item.prices : prior.prices, purchases: item.purchases?.length ? item.purchases : prior.purchases } : item);
     }
-    return [...unique.values()];
-  }, [catalogOnly, purchasedItems, items]);
+    return [...unique.values()].filter((item) => !deletedCatalogNames.includes(item.name.toLowerCase()));
+  }, [catalogOnly, purchasedItems, items, deletedCatalogNames]);
   const visibleCatalog = useMemo(() => catalogItems.filter((item) => item.name.toLowerCase().includes(query.toLowerCase())).sort((a, b) => {
     const average = (item: Item) => { const purchases = item.purchases ?? []; return purchases.length ? purchases.reduce((sum, p) => sum + p.amount, 0) / purchases.length : Infinity; };
     if (catalogSort === "times") return (b.purchases?.length ?? 0) - (a.purchases?.length ?? 0);
@@ -121,11 +125,20 @@ export default function Home() {
     if (catalogItems.some((item) => item.name.toLowerCase() === name.toLowerCase())) {
       setNotice(`${name} is already in the items catalog`);
     } else {
+      setDeletedCatalogNames((list) => list.filter((entry) => entry !== name.toLowerCase()));
       setCatalogOnly((list) => [{ id: crypto.randomUUID(), name, category: "Other", unit: "", prices: [], purchases: [], checked: false }, ...list]);
       setNotice(`${name} added to the items catalog`);
     }
     setNewCatalogItem("");
     window.setTimeout(() => setNotice(""), 2500);
+  }
+  function deleteCatalogItem(item: Item) {
+    const key = item.name.toLowerCase();
+    setDeletedCatalogNames((list) => list.includes(key) ? list : [...list, key]);
+    setCatalogOnly((list) => list.filter((entry) => entry.name.toLowerCase() !== key));
+    setItems((list) => list.filter((entry) => entry.name.toLowerCase() !== key));
+    setNotice(`${item.name} removed from the items catalog`);
+    window.setTimeout(() => setNotice(""), 3000);
   }
   function removeItem(item: Item) {
     setPurchase({ store: "Walmart", amount: "" });
@@ -198,7 +211,7 @@ export default function Home() {
             {activeTab === "prices" && <div className="store-tabs">{stores.map((store) => <button key={store} className={selectedStore === store ? "selected" : ""} onClick={() => setSelectedStore(store)}>{store}</button>)}</div>}
             {activeTab === "items" && <div className="sort-bar"><span>Sort by</span><select value={catalogSort} onChange={(e) => setCatalogSort(e.target.value as typeof catalogSort)}><option value="name">Name</option><option value="price-low">Average price: low to high</option><option value="price-high">Average price: high to low</option><option value="times">Times bought</option></select></div>}
             <div className="list-body">
-              {activeTab === "list" ? groups.map(([store, grouped]) => <section className="store-group" key={store}><div className="group-header"><span className="store-marker">{store === "Costco" ? "C" : store === "Walmart" ? "W" : store === "Target" ? "T" : store === "Trader Joe's" ? "TJ" : "·"}</span><strong>{store === "No price yet" ? "Still need a price" : `Cheapest at ${store}`}</strong><span className="group-count">{grouped.length}</span><span className="group-rule"/></div>{grouped.map((item) => { const cheapest = best(item); return <article className="grocery-row" key={item.id}><button className="check-box" aria-label={`Mark ${item.name} bought`} onClick={() => removeItem(item)}><span/></button><div className="food-icon">{icons[item.category] ?? icons.Other}</div><div className="item-main"><strong>{item.name}</strong><small>{item.unit || item.category}</small></div>{cheapest ? <div className="best-price"><strong>{money(cheapest.amount)}</strong><small>best price</small></div> : <div className="best-price"><strong>—</strong><small>add a price</small></div>}<button className="compare-link" onClick={() => { setSelectedStore("Walmart"); setActiveTab("prices"); }}>Compare</button><button className="row-menu" title="Remove item" onClick={() => setModal({ item, bought: false })}><Icon name="trash" size={15}/></button></article>; })}</section>) : activeTab === "prices" ? visibleItems.map((item) => { const cheapest = best(item); const price = item.prices.filter((p) => p.store === selectedStore).sort((a, b) => a.amount - b.amount)[0]; return <article className="grocery-row compare-row" key={item.id}><div className="food-icon">{icons[item.category] ?? icons.Other}</div><div className="item-main"><strong>{item.name}</strong><small>{item.unit || item.category}</small></div><div className="best-price"><strong>{price ? money(price.amount) : "—"}</strong><small>{price ? `at ${selectedStore}` : "no price yet"}</small></div>{price && cheapest && cheapest.store !== selectedStore ? <span className="price-diff">+{money(price.amount - cheapest.amount)} vs best</span> : price ? <span className="best-tag">Best price</span> : <span className="price-diff">Not tracked</span>}<button className="row-menu" title="View price history" onClick={() => setShowHistory(showHistory === item.id ? null : item.id)}><Icon name="history" size={15}/></button></article>; }) : visibleCatalog.map((item) => { const purchases = item.purchases ?? []; const average = purchases.length ? purchases.reduce((sum, entry) => sum + entry.amount, 0) / purchases.length : null; const isListed = items.some((entry) => entry.name.toLowerCase() === item.name.toLowerCase()); return <article className="grocery-row compare-row" key={item.id}><div className="food-icon">{icons[item.category] ?? icons.Other}</div><div className="item-main"><strong>{item.name}</strong><small>{item.unit || item.category} · {purchases.length} {purchases.length === 1 ? "purchase" : "purchases"}</small></div><div className="best-price"><strong>{average === null ? "—" : money(average)}</strong><small>{average === null ? "no purchase yet" : "average paid"}</small></div><button className={`catalog-add ${isListed ? "listed" : ""}`} disabled={isListed} onClick={() => addItem(item)}>{isListed ? "On list" : "+ Add to list"}</button><button className="row-menu" title="View price history" onClick={() => setShowHistory(showHistory === item.id ? null : item.id)}><Icon name="history" size={15}/></button></article>; })}
+              {activeTab === "list" ? groups.map(([store, grouped]) => <section className="store-group" key={store}><div className="group-header"><span className="store-marker">{store === "Costco" ? "C" : store === "Walmart" ? "W" : store === "Target" ? "T" : store === "Trader Joe's" ? "TJ" : "·"}</span><strong>{store === "No price yet" ? "Still need a price" : `Cheapest at ${store}`}</strong><span className="group-count">{grouped.length}</span><span className="group-rule"/></div>{grouped.map((item) => { const cheapest = best(item); return <article className="grocery-row" key={item.id}><button className="check-box" aria-label={`Mark ${item.name} bought`} onClick={() => removeItem(item)}><span/></button><div className="food-icon">{icons[item.category] ?? icons.Other}</div><div className="item-main"><strong>{item.name}</strong><small>{item.unit || item.category}</small></div>{cheapest ? <div className="best-price"><strong>{money(cheapest.amount)}</strong><small>best price</small></div> : <div className="best-price"><strong>—</strong><small>add a price</small></div>}<button className="compare-link" onClick={() => { setSelectedStore("Walmart"); setActiveTab("prices"); }}>Compare</button><button className="row-menu" title="Remove item" onClick={() => setModal({ item, bought: false })}><Icon name="trash" size={15}/></button></article>; })}</section>) : activeTab === "prices" ? visibleItems.map((item) => { const cheapest = best(item); const price = item.prices.filter((p) => p.store === selectedStore).sort((a, b) => a.amount - b.amount)[0]; return <article className="grocery-row compare-row" key={item.id}><div className="food-icon">{icons[item.category] ?? icons.Other}</div><div className="item-main"><strong>{item.name}</strong><small>{item.unit || item.category}</small></div><div className="best-price"><strong>{price ? money(price.amount) : "—"}</strong><small>{price ? `at ${selectedStore}` : "no price yet"}</small></div>{price && cheapest && cheapest.store !== selectedStore ? <span className="price-diff">+{money(price.amount - cheapest.amount)} vs best</span> : price ? <span className="best-tag">Best price</span> : <span className="price-diff">Not tracked</span>}<button className="row-menu" title="View price history" onClick={() => setShowHistory(showHistory === item.id ? null : item.id)}><Icon name="history" size={15}/></button></article>; }) : visibleCatalog.map((item) => { const purchases = item.purchases ?? []; const average = purchases.length ? purchases.reduce((sum, entry) => sum + entry.amount, 0) / purchases.length : null; const isListed = items.some((entry) => entry.name.toLowerCase() === item.name.toLowerCase()); return <article className="grocery-row compare-row" key={item.id}><div className="food-icon">{icons[item.category] ?? icons.Other}</div><div className="item-main"><strong>{item.name}</strong><small>{item.unit || item.category} · {purchases.length} {purchases.length === 1 ? "purchase" : "purchases"}</small></div><div className="best-price"><strong>{average === null ? "—" : money(average)}</strong><small>{average === null ? "no purchase yet" : "average paid"}</small></div><button className={`catalog-add ${isListed ? "listed" : ""}`} disabled={isListed} onClick={() => addItem(item)}>{isListed ? "On list" : "+ Add to list"}</button><button className="row-menu" title="View price history" onClick={() => setShowHistory(showHistory === item.id ? null : item.id)}><Icon name="history" size={15}/></button><button className="row-menu catalog-delete" aria-label={`Delete ${item.name} from household items`} title="Delete from household items" onClick={() => deleteCatalogItem(item)}><Icon name="trash" size={15}/></button></article>; })}
               {activeTab === "items" && visibleCatalog.length === 0 && <div className="empty-state">No items found. Add a food below to grow the Greenhouse catalog.</div>}
               {activeTab !== "items" && visibleItems.length === 0 && <div className="empty-state">No items found. Try another search.</div>}
             </div>
