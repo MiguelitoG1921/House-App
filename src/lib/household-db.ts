@@ -33,6 +33,8 @@ export type HouseholdSnapshot = {
   catalogOnly: unknown[];
   purchasedItems: unknown[];
   deletedCatalogNames: string[];
+  stores: string[];
+  comments: { id: string; author: string; body: string; createdAt: string }[];
 };
 
 export async function readHousehold() {

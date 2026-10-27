@@ -3,10 +3,13 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { FormEvent } from "react";
 
-type Store = "Costco" | "Walmart" | "Trader Joe's" | "Target";
+type Store = string;
 type Price = { store: Store; amount: number; date: string };
 type Item = { id: string; name: string; category: string; unit: string; prices: Price[]; purchases?: Price[]; checked: boolean };
-type SharedSnapshot = { items: Item[]; catalogOnly: Item[]; purchasedItems: Item[]; deletedCatalogNames: string[] };
+type BulletinComment = { id: string; author: string; body: string; createdAt: string };
+type SharedSnapshot = { items: Item[]; catalogOnly: Item[]; purchasedItems: Item[]; deletedCatalogNames: string[]; stores: Store[]; comments: BulletinComment[] };
+
+const defaultStores: Store[] = ["Costco", "Walmart", "Trader Joe's", "Target"];
 
 function readBrowserSnapshot(): SharedSnapshot {
   const read = <T,>(key: string, fallback: T): T => {
@@ -18,24 +21,17 @@ function readBrowserSnapshot(): SharedSnapshot {
     catalogOnly: read<Item[]>("greenhouse-catalog-v1", []),
     purchasedItems: read<Item[]>("greenhouse-purchased-v1", oldArchive.map((item) => ({ ...item, purchases: item.purchases ?? item.prices.slice(-1) }))),
     deletedCatalogNames: read<string[]>("greenhouse-deleted-catalog-v1", []),
+    stores: read<Store[]>("greenhouse-stores-v1", defaultStores),
+    comments: read<BulletinComment[]>("greenhouse-comments-v1", []),
   };
 }
 
-const initialItems: Item[] = [
-  { id: "1", name: "Organic whole milk", category: "Dairy", unit: "½ gallon", checked: false, prices: [{ store: "Costco", amount: 3.49, date: "2026-10-22" }, { store: "Walmart", amount: 3.78, date: "2026-10-20" }, { store: "Target", amount: 4.29, date: "2026-10-12" }] },
-  { id: "2", name: "Rolled oats", category: "Pantry", unit: "42 oz", checked: false, prices: [{ store: "Costco", amount: 6.99, date: "2026-10-22" }, { store: "Walmart", amount: 7.48, date: "2026-10-18" }] },
-  { id: "3", name: "Avocados", category: "Produce", unit: "bag of 6", checked: false, prices: [{ store: "Costco", amount: 5.99, date: "2026-10-22" }, { store: "Walmart", amount: 1.18, date: "2026-10-20" }, { store: "Trader Joe's", amount: 4.49, date: "2026-10-16" }] },
-  { id: "4", name: "Baby spinach", category: "Produce", unit: "5 oz", checked: false, prices: [{ store: "Walmart", amount: 2.48, date: "2026-10-20" }, { store: "Costco", amount: 4.99, date: "2026-10-22" }] },
-  { id: "5", name: "Free-range eggs", category: "Dairy", unit: "dozen", checked: false, prices: [{ store: "Costco", amount: 5.49, date: "2026-10-22" }, { store: "Walmart", amount: 5.96, date: "2026-10-20" }, { store: "Trader Joe's", amount: 4.99, date: "2026-10-16" }] },
-  { id: "6", name: "Sourdough bread", category: "Bakery", unit: "loaf", checked: false, prices: [{ store: "Trader Joe's", amount: 3.99, date: "2026-10-16" }, { store: "Walmart", amount: 4.48, date: "2026-10-20" }] },
-  { id: "7", name: "Black beans", category: "Pantry", unit: "15 oz can", checked: false, prices: [{ store: "Costco", amount: 1.29, date: "2026-10-22" }, { store: "Walmart", amount: 1.48, date: "2026-10-20" }] },
-  { id: "8", name: "Bananas", category: "Produce", unit: "bunch", checked: false, prices: [{ store: "Walmart", amount: 1.76, date: "2026-10-20" }, { store: "Costco", amount: 1.99, date: "2026-10-22" }] },
-];
-
-const stores: Store[] = ["Costco", "Walmart", "Trader Joe's", "Target"];
+const initialItems: Item[] = [];
 const money = (n: number) => `$${n.toFixed(2)}`;
 const best = (item: Item) => item.prices.reduce<Price | null>((min, p) => !min || p.amount < min.amount ? p : min, null);
 const icons: Record<string, string> = { Produce: "🥑", Dairy: "🥛", Pantry: "🥫", Bakery: "🍞", Other: "🛒" };
+const storeMarker = (store: Store) => store.split(/\s+/).map((word) => word[0]).join("").slice(0, 2).toUpperCase();
+const storeBadgeClass = (store: Store) => store.toLowerCase().includes("costco") ? "costco" : store.toLowerCase().includes("walmart") ? "walmart" : store.toLowerCase().includes("trader") ? "trader" : "store-generic";
 
 function Icon({ name, size = 18 }: { name: string; size?: number }) {
   const shared = { width: size, height: size, viewBox: "0 0 24 24", fill: "none", stroke: "currentColor", strokeWidth: 1.7, strokeLinecap: "round" as const, strokeLinejoin: "round" as const, "aria-hidden": true as const };
@@ -46,16 +42,20 @@ function Icon({ name, size = 18 }: { name: string; size?: number }) {
   if (name === "chart") return <svg {...shared}><path d="M4 19V5M4 19h17"/><path d="m7 15 4-4 3 2 6-7"/></svg>;
   if (name === "history") return <svg {...shared}><path d="M3 12a9 9 0 1 0 3-6.7L3 8"/><path d="M3 3v5h5M12 7v5l4 2"/></svg>;
   if (name === "upload") return <svg {...shared}><path d="M12 16V4m-4 4 4-4 4 4"/><path d="M4 16v3a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-3"/></svg>;
+  if (name === "store") return <svg {...shared}><path d="M3 10v10h18V10M2 10l2-7h16l2 7"/><path d="M2 10a3 3 0 0 0 6 0 3 3 0 0 0 6 0 3 3 0 0 0 6 0M9 20v-6h6v6"/></svg>;
+  if (name === "community") return <svg {...shared}><path d="M20 11.5a7.5 7.5 0 0 1-7.5 7.5H7l-4 2 1.5-4A7.5 7.5 0 1 1 20 11.5Z"/><path d="M8 11h.01M12 11h.01M16 11h.01"/></svg>;
   if (name === "trash") return <svg {...shared}><path d="M3 6h18M8 6V4h8v2m3 0-1 14H6L5 6m4 4v6m6-6v6"/></svg>;
   return <svg {...shared}><path d="M12 2v20M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg>;
 }
 
 export default function Home() {
   const [items, setItems] = useState<Item[]>(initialItems);
-  const [activeTab, setActiveTab] = useState<"list" | "prices" | "items">("list");
+  const [activeTab, setActiveTab] = useState<"list" | "prices" | "items" | "stores" | "community">("list");
   const [catalogOnly, setCatalogOnly] = useState<Item[]>([]);
   const [deletedCatalogNames, setDeletedCatalogNames] = useState<string[]>([]);
   const [purchasedItems, setPurchasedItems] = useState<Item[]>([]);
+  const [stores, setStores] = useState<Store[]>(defaultStores);
+  const [comments, setComments] = useState<BulletinComment[]>([]);
   const [storageReady, setStorageReady] = useState(false);
   const [sharedConfigured, setSharedConfigured] = useState(false);
   const [sharedAuthorized, setSharedAuthorized] = useState(false);
@@ -74,6 +74,9 @@ export default function Home() {
   const [query, setQuery] = useState("");
   const [newItem, setNewItem] = useState("");
   const [newCatalogItem, setNewCatalogItem] = useState("");
+  const [newStore, setNewStore] = useState("");
+  const [commentAuthor, setCommentAuthor] = useState("");
+  const [commentDraft, setCommentDraft] = useState("");
   const [showSuggestions, setShowSuggestions] = useState(false);
   const [modal, setModal] = useState<{ item: Item; bought: boolean } | null>(null);
   const [purchase, setPurchase] = useState({ store: "Walmart" as Store, amount: "" });
@@ -86,22 +89,29 @@ export default function Home() {
     setCatalogOnly(browser.catalogOnly);
     setPurchasedItems(browser.purchasedItems);
     setDeletedCatalogNames(browser.deletedCatalogNames);
+    setStores(browser.stores);
+    setComments(browser.comments);
     setStorageReady(true);
   }, []);
   useEffect(() => { if (storageReady) localStorage.setItem("common-table-groceries-v1", JSON.stringify(items)); }, [items, storageReady]);
   useEffect(() => { if (storageReady) localStorage.setItem("greenhouse-purchased-v1", JSON.stringify(purchasedItems)); }, [purchasedItems, storageReady]);
   useEffect(() => { if (storageReady) localStorage.setItem("greenhouse-catalog-v1", JSON.stringify(catalogOnly)); }, [catalogOnly, storageReady]);
   useEffect(() => { if (storageReady) localStorage.setItem("greenhouse-deleted-catalog-v1", JSON.stringify(deletedCatalogNames)); }, [deletedCatalogNames, storageReady]);
+  useEffect(() => { if (storageReady) localStorage.setItem("greenhouse-stores-v1", JSON.stringify(stores)); }, [stores, storageReady]);
+  useEffect(() => { if (storageReady) localStorage.setItem("greenhouse-comments-v1", JSON.stringify(comments)); }, [comments, storageReady]);
 
   function applySharedSnapshot(snapshot: SharedSnapshot, revision: number) {
-    const serialized = JSON.stringify(snapshot);
+    const normalized = { ...snapshot, stores: Array.isArray(snapshot.stores) ? snapshot.stores : defaultStores, comments: Array.isArray(snapshot.comments) ? snapshot.comments : [] };
+    const serialized = JSON.stringify(normalized);
     lastSyncedSnapshot.current = serialized;
     revisionRef.current = revision;
     setSyncRevision(revision);
-    setItems(snapshot.items);
-    setCatalogOnly(snapshot.catalogOnly);
-    setPurchasedItems(snapshot.purchasedItems);
-    setDeletedCatalogNames(snapshot.deletedCatalogNames);
+    setItems(normalized.items);
+    setCatalogOnly(normalized.catalogOnly);
+    setPurchasedItems(normalized.purchasedItems);
+    setDeletedCatalogNames(normalized.deletedCatalogNames);
+    setStores(normalized.stores);
+    setComments(normalized.comments);
     setSharedReady(true);
     setSyncStatus("synced");
   }
@@ -158,7 +168,7 @@ export default function Home() {
     }
   }
 
-  const sharedSnapshot = JSON.stringify({ items, catalogOnly, purchasedItems, deletedCatalogNames });
+  const sharedSnapshot = JSON.stringify({ items, catalogOnly, purchasedItems, deletedCatalogNames, stores, comments });
   useEffect(() => {
     if (!sharedAuthorized || !sharedReady || sharedSnapshot === lastSyncedSnapshot.current) return;
     pendingSave.current = true;
@@ -204,6 +214,30 @@ export default function Home() {
     return () => clearInterval(poll);
   }, [sharedAuthorized, sharedReady, sharedSnapshot]);
 
+  function addStore(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const name = newStore.trim();
+    if (!name) return;
+    if (stores.some((store) => store.toLowerCase() === name.toLowerCase())) {
+      setNotice(`${name} is already in your stores`);
+    } else {
+      setStores((current) => [...current, name]);
+      setNotice(`${name} added to stores`);
+    }
+    setNewStore("");
+    window.setTimeout(() => setNotice(""), 2500);
+  }
+
+  function postComment(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const body = commentDraft.trim();
+    const author = commentAuthor.trim();
+    if (!body || !author) return;
+    const createdAt = new Date().toISOString();
+    setComments((current) => [{ id: crypto.randomUUID(), author, body, createdAt }, ...current]);
+    setCommentDraft("");
+  }
+
   const visibleItems = useMemo(() => items.filter((item) => item.name.toLowerCase().includes(query.toLowerCase())), [items, query]);
   const groups = useMemo(() => {
     const map = new Map<string, Item[]>();
@@ -213,6 +247,18 @@ export default function Home() {
     }
     return [...map.entries()].sort((a, b) => a[0] === "No price yet" ? 1 : b[0] === "No price yet" ? -1 : a[0].localeCompare(b[0]));
   }, [visibleItems]);
+  const routeGroups = useMemo(() => {
+    const grouped = new Map<Store, { item: Item; price: Price }[]>();
+    for (const item of items) {
+      const cheapest = best(item);
+      if (!cheapest) continue;
+      const cheapestStores = new Set(item.prices.filter((price) => price.amount === cheapest.amount).map((price) => price.store));
+      for (const store of cheapestStores) grouped.set(store, [...(grouped.get(store) ?? []), { item, price: cheapest }]);
+    }
+    return [...grouped.entries()]
+      .map(([store, entries]) => ({ store, entries, total: entries.reduce((sum, entry) => sum + entry.price.amount, 0) }))
+      .sort((a, b) => b.entries.length - a.entries.length || a.total - b.total || a.store.localeCompare(b.store));
+  }, [items]);
   const tracked = items.filter((item) => item.prices.length > 0).length;
   const catalogItems = useMemo(() => {
     const combined = [...catalogOnly, ...purchasedItems, ...items];
@@ -232,6 +278,13 @@ export default function Home() {
     return a.name.localeCompare(b.name);
   }), [catalogItems, query, catalogSort]);
   const suggestions = useMemo(() => newItem.trim().length < 1 ? [] : catalogItems.filter((item) => item.name.toLowerCase().includes(newItem.trim().toLowerCase())).slice(0, 5), [catalogItems, newItem]);
+  const visibleStores = stores.filter((store) => store.toLowerCase().includes(query.toLowerCase()));
+  const visibleComments = comments.filter((comment) => `${comment.author} ${comment.body}`.toLowerCase().includes(query.toLowerCase()));
+  const pageTitle = activeTab === "list" ? "Grocery list" : activeTab === "prices" ? "Price comparison" : activeTab === "items" ? "Items" : activeTab === "stores" ? "Stores" : "Community";
+  const pageHeading = activeTab === "list" ? "The grocery list" : activeTab === "prices" ? "Price comparison" : activeTab === "items" ? "Household items" : activeTab === "stores" ? "Stores" : "Community bulletin board";
+  const pageDescription = activeTab === "list" ? "Good food, good prices, good neighbors." : activeTab === "prices" ? "See how every store stacks up before you head out." : activeTab === "items" ? "Your house’s food catalog, with prices and purchase history." : activeTab === "stores" ? "Keep the stores Greenhouse shops at in one place." : "Share notes, questions, and updates with the household.";
+  const panelHeading = activeTab === "list" ? "Things to pick up" : activeTab === "prices" ? "Compare your stores" : activeTab === "items" ? "Items the house buys" : activeTab === "stores" ? "Stores on file" : "Household comments";
+  const panelDescription = activeTab === "list" ? "Grouped by where each item costs least" : activeTab === "prices" ? `Showing prices at ${selectedStore}` : activeTab === "items" ? `${catalogItems.length} items in the house catalog` : activeTab === "stores" ? `${stores.length} ${stores.length === 1 ? "store" : "stores"} available for prices and shopping routes` : "Latest comments first";
 
   function addItem(item?: Item) {
     if (item) {
@@ -317,36 +370,45 @@ export default function Home() {
   return (
     <main className="app-shell">
       <aside className="sidebar">
-        <a className="brand" href="#top"><span className="brand-icon">c</span><span>common<span className="brand-light">table</span><small>YOUR HOUSEHOLD, IN SYNC</small></span></a>
+        <a className="brand" href="#top"><span className="brand-icon">G</span><span>Greenhouse<small>COOPERATIVE GROCERIES</small></span></a>
         <div className="side-label">YOUR HOUSE</div>
         <div className="house-card"><span className="house-icon">⌂</span><span><strong>Greenhouse</strong><small>12 members</small></span><Icon name="chevron" size={15}/></div>
         <div className="side-label nav-label">WORKSPACE</div>
         <button className={`nav-item ${activeTab === "list" ? "active" : ""}`} onClick={() => setActiveTab("list")}><Icon name="cart"/><span>Grocery list</span><b>{items.length}</b></button>
         <button className={`nav-item ${activeTab === "prices" ? "active" : ""}`} onClick={() => setActiveTab("prices")}><Icon name="chart"/><span>Price comparison</span></button>
         <button className={`nav-item ${activeTab === "items" ? "active" : ""}`} onClick={() => setActiveTab("items")}><Icon name="history"/><span>Items</span><b>{catalogItems.length}</b></button>
+        <button className={`nav-item ${activeTab === "stores" ? "active" : ""}`} onClick={() => setActiveTab("stores")}><Icon name="store"/><span>Stores</span><b>{stores.length}</b></button>
+        <button className={`nav-item ${activeTab === "community" ? "active" : ""}`} onClick={() => setActiveTab("community")}><Icon name="community"/><span>Community</span><b>{comments.length}</b></button>
         <button className="nav-item" onClick={() => setShowHistory(showHistory ? null : "all")}><Icon name="history"/><span>Purchase history</span></button>
-        <div className="sidebar-bottom"><div className="member-stack"><span>J</span><span>M</span><span>A</span><span>+9</span></div><div className="member-copy"><strong>12 members</strong><small>Shopping together</small></div><span className="presence-dot"/></div>
+        <div className="sidebar-bottom"><span className="house-icon">⌂</span><div className="member-copy"><strong>12 coop members</strong><small>Shared household</small></div></div>
       </aside>
 
       <section className="main-area" id="top">
-        <header className="topbar"><div className="breadcrumb">Greenhouse <span>/</span> <strong>{activeTab === "list" ? "Grocery list" : activeTab === "prices" ? "Price comparison" : "Items"}</strong></div><div className="top-actions"><span className={`sync-label ${syncStatus === "offline" ? "sync-offline" : ""}`}><i/> {syncStatus === "synced" ? "Synced" : syncStatus === "saving" || syncStatus === "connecting" ? "Syncing…" : syncStatus === "offline" ? "Sync paused" : sharedConfigured ? "Connect to sync" : "This device only"}</span><button className="avatar" aria-label="Your profile">E</button></div></header>
+        <header className="topbar"><div className="breadcrumb">Greenhouse <span>/</span> <strong>{pageTitle}</strong></div><div className="top-actions"><span className={`sync-label ${syncStatus === "offline" ? "sync-offline" : ""}`}><i/> {syncStatus === "synced" ? "Synced" : syncStatus === "saving" || syncStatus === "connecting" ? "Syncing…" : syncStatus === "offline" ? "Sync paused" : sharedConfigured ? "Connect to sync" : "This device only"}</span></div></header>
         {!sharedConfigured && <div className="sync-banner"><strong>Changes are saved on this device only.</strong><span>To sync Greenhouse across phones and computers, configure the shared database and household access code.</span></div>}
         {sharedConfigured && syncStatus === "offline" && <div className="sync-banner"><strong>Can’t reach Greenhouse right now.</strong><span>Your changes are saved on this device and will sync when the connection returns.</span></div>}
         <div className="content">
-          <div className="welcome-row"><div><div className="eyebrow">GREENHOUSE COOPERATIVE · 12 MEMBERS</div><h1>{activeTab === "list" ? "The grocery list" : activeTab === "prices" ? "Price comparison" : "Household items"}</h1><p>{activeTab === "list" ? "Good food, good prices, good neighbors." : activeTab === "prices" ? "See how every store stacks up before you head out." : "Your house’s food catalog, with prices and purchase history."}</p></div><label className="upload-button"><Icon name="upload" size={17}/> Upload prices<input type="file" accept=".csv,text/csv" onChange={(e) => importPrices(e.target.files?.[0])}/></label></div>
+          <div className="welcome-row"><div><div className="eyebrow">GREENHOUSE COOPERATIVE · 12 MEMBERS</div><h1>{pageHeading}</h1><p>{pageDescription}</p></div>{(activeTab === "list" || activeTab === "prices") && <label className="upload-button"><Icon name="upload" size={17}/> Upload prices<input type="file" accept=".csv,text/csv" onChange={(e) => importPrices(e.target.files?.[0])}/></label>}</div>
 
-          <div className="summary-grid"><div className="summary-card"><span className="summary-icon mint"><Icon name="cart"/></span><div><small>ON THE LIST</small><strong>{items.length} <em>items</em></strong></div></div><div className="summary-card"><span className="summary-icon peach"><Icon name="chart"/></span><div><small>PRICES TRACKED</small><strong>{tracked} <em>of {items.length} items</em></strong></div></div><div className="summary-card savings-card"><span className="summary-icon yellow"><Icon name="money"/></span><div><small>BEST SHOPPING ROUTE</small><strong>3 <em>stores this week</em></strong></div><span className="sparkline">⌁</span></div></div>
+          <div className="summary-grid"><div className="summary-card"><span className="summary-icon mint"><Icon name="cart"/></span><div><small>ON THE LIST</small><strong>{items.length} <em>items</em></strong></div></div><div className="summary-card"><span className="summary-icon peach"><Icon name="chart"/></span><div><small>PRICES TRACKED</small><strong>{tracked} <em>of {items.length} items</em></strong></div></div><div className="summary-card savings-card"><span className="summary-icon yellow"><Icon name="money"/></span><div><small>STORES WITH BEST PRICES</small><strong>{routeGroups.length} <em>{routeGroups.length === 1 ? "location" : "locations"}</em></strong></div></div></div>
 
           <div className="workspace-grid"><div className="list-panel panel">
-            <div className="panel-heading"><div><h2>{activeTab === "list" ? "Things to pick up" : activeTab === "prices" ? "Compare your stores" : "Items the house buys"}</h2><p>{activeTab === "list" ? "Grouped by where each item costs least" : activeTab === "prices" ? `Showing prices at ${selectedStore}` : `${catalogItems.length} items in the house catalog`}</p></div><button className="icon-button" title="Purchase history" onClick={() => setShowHistory(showHistory ? null : "all")}><Icon name="history" size={17}/></button></div>
-            <div className="list-toolbar"><label className="search-box"><Icon name="search" size={16}/><input placeholder="Find something…" value={query} onChange={(e) => setQuery(e.target.value)}/><kbd>⌘ K</kbd></label><button className="filter-button">All items <Icon name="chevron" size={14}/></button></div>
+            <div className="panel-heading"><div><h2>{activeTab === "community" ? "Community bulletin board" : panelHeading}</h2><p>{panelDescription}</p></div>{activeTab !== "community" && activeTab !== "stores" && <button className="icon-button" title="Purchase history" onClick={() => setShowHistory(showHistory ? null : "all")}><Icon name="history" size={17}/></button>}</div>
+            {(activeTab === "list" || activeTab === "prices" || activeTab === "items" || activeTab === "stores" || activeTab === "community") && <div className="list-toolbar"><label className="search-box"><Icon name="search" size={16}/><input placeholder={activeTab === "stores" ? "Find a store…" : activeTab === "community" ? "Search comments…" : "Find something…"} value={query} onChange={(e) => setQuery(e.target.value)}/><kbd>⌘ K</kbd></label>{(activeTab === "list" || activeTab === "prices" || activeTab === "items") && <button className="filter-button">All items <Icon name="chevron" size={14}/></button>}</div>}
 
             {activeTab === "prices" && <div className="store-tabs">{stores.map((store) => <button key={store} className={selectedStore === store ? "selected" : ""} onClick={() => setSelectedStore(store)}>{store}</button>)}</div>}
             {activeTab === "items" && <div className="sort-bar"><span>Sort by</span><select value={catalogSort} onChange={(e) => setCatalogSort(e.target.value as typeof catalogSort)}><option value="name">Name</option><option value="price-low">Average price: low to high</option><option value="price-high">Average price: high to low</option><option value="times">Times bought</option></select></div>}
             <div className="list-body">
-              {activeTab === "list" ? groups.map(([store, grouped]) => <section className="store-group" key={store}><div className="group-header"><span className="store-marker">{store === "Costco" ? "C" : store === "Walmart" ? "W" : store === "Target" ? "T" : store === "Trader Joe's" ? "TJ" : "·"}</span><strong>{store === "No price yet" ? "Still need a price" : `Cheapest at ${store}`}</strong><span className="group-count">{grouped.length}</span><span className="group-rule"/></div>{grouped.map((item) => { const cheapest = best(item); return <article className="grocery-row" key={item.id}><button className="check-box" aria-label={`Mark ${item.name} bought`} onClick={() => removeItem(item)}><span/></button><div className="food-icon">{icons[item.category] ?? icons.Other}</div><div className="item-main"><strong>{item.name}</strong><small>{item.unit || item.category}</small></div>{cheapest ? <div className="best-price"><strong>{money(cheapest.amount)}</strong><small>best price</small></div> : <div className="best-price"><strong>—</strong><small>add a price</small></div>}<button className="compare-link" onClick={() => { setSelectedStore("Walmart"); setActiveTab("prices"); }}>Compare</button><button className="row-menu" title="Remove item" onClick={() => setModal({ item, bought: false })}><Icon name="trash" size={15}/></button></article>; })}</section>) : activeTab === "prices" ? visibleItems.map((item) => { const cheapest = best(item); const price = item.prices.filter((p) => p.store === selectedStore).sort((a, b) => a.amount - b.amount)[0]; return <article className="grocery-row compare-row" key={item.id}><div className="food-icon">{icons[item.category] ?? icons.Other}</div><div className="item-main"><strong>{item.name}</strong><small>{item.unit || item.category}</small></div><div className="best-price"><strong>{price ? money(price.amount) : "—"}</strong><small>{price ? `at ${selectedStore}` : "no price yet"}</small></div>{price && cheapest && cheapest.store !== selectedStore ? <span className="price-diff">+{money(price.amount - cheapest.amount)} vs best</span> : price ? <span className="best-tag">Best price</span> : <span className="price-diff">Not tracked</span>}<button className="row-menu" title="View price history" onClick={() => setShowHistory(showHistory === item.id ? null : item.id)}><Icon name="history" size={15}/></button></article>; }) : visibleCatalog.map((item) => { const purchases = item.purchases ?? []; const average = purchases.length ? purchases.reduce((sum, entry) => sum + entry.amount, 0) / purchases.length : null; const isListed = items.some((entry) => entry.name.toLowerCase() === item.name.toLowerCase()); return <article className="grocery-row compare-row catalog-row" key={item.id}><div className="food-icon">{icons[item.category] ?? icons.Other}</div><div className="item-main"><strong>{item.name}</strong><small>{item.unit || item.category} · {purchases.length} {purchases.length === 1 ? "purchase" : "purchases"}</small></div><div className="best-price"><strong>{average === null ? "—" : money(average)}</strong><small>{average === null ? "no purchase yet" : "average paid"}</small></div><button className={`catalog-add ${isListed ? "listed" : ""}`} disabled={isListed} onClick={() => addItem(item)}>{isListed ? "On list" : "+ Add to list"}</button><button className="row-menu" title="View price history" onClick={() => setShowHistory(showHistory === item.id ? null : item.id)}><Icon name="history" size={15}/></button><button className="row-menu catalog-delete" aria-label={`Delete ${item.name} from household items`} title="Delete from household items" onClick={() => deleteCatalogItem(item)}><Icon name="trash" size={15}/></button></article>; })}
-              {activeTab === "items" && visibleCatalog.length === 0 && <div className="empty-state">No items found. Add a food below to grow the Greenhouse catalog.</div>}
-              {activeTab !== "items" && visibleItems.length === 0 && <div className="empty-state">No items found. Try another search.</div>}
+              {activeTab === "list" && (groups.length ? groups.map(([store, grouped]) => (
+                <section className="store-group" key={store}>
+                  <div className="group-header"><span className="store-marker">{store === "No price yet" ? "·" : storeMarker(store)}</span><strong>{store === "No price yet" ? "Still need a price" : `Cheapest at ${store}`}</strong><span className="group-count">{grouped.length}</span><span className="group-rule"/></div>
+                  {grouped.map((item) => { const cheapest = best(item); return <article className="grocery-row" key={item.id}><button className="check-box" aria-label={`Mark ${item.name} bought`} onClick={() => removeItem(item)}><span/></button><div className="food-icon">{icons[item.category] ?? icons.Other}</div><div className="item-main"><strong>{item.name}</strong><small>{item.unit || item.category}</small></div>{cheapest ? <div className="best-price"><strong>{money(cheapest.amount)}</strong><small>best price</small></div> : <div className="best-price"><strong>—</strong><small>add a price</small></div>}<button className="compare-link" onClick={() => { setSelectedStore(stores[0] ?? ""); setActiveTab("prices"); }}>Compare</button><button className="row-menu" title="Remove item" onClick={() => setModal({ item, bought: false })}><Icon name="trash" size={15}/></button></article>; })}
+                </section>
+              )) : <div className="empty-state">Your grocery list is clear. Add an item below when you need it.</div>)}
+              {activeTab === "prices" && (visibleItems.length ? visibleItems.map((item) => { const cheapest = best(item); const price = item.prices.filter((p) => p.store === selectedStore).sort((a, b) => a.amount - b.amount)[0]; return <article className="grocery-row compare-row" key={item.id}><div className="food-icon">{icons[item.category] ?? icons.Other}</div><div className="item-main"><strong>{item.name}</strong><small>{item.unit || item.category}</small></div><div className="best-price"><strong>{price ? money(price.amount) : "—"}</strong><small>{price ? `at ${selectedStore}` : "no price yet"}</small></div>{price && cheapest && cheapest.store !== selectedStore ? <span className="price-diff">+{money(price.amount - cheapest.amount)} vs best</span> : price ? <span className="best-tag">Best price</span> : <span className="price-diff">Not tracked</span>}<button className="row-menu" title="View price history" onClick={() => setShowHistory(showHistory === item.id ? null : item.id)}><Icon name="history" size={15}/></button></article>; }) : <div className="empty-state">Add grocery-list items to compare tracked store prices.</div>)}
+              {activeTab === "items" && (visibleCatalog.length ? visibleCatalog.map((item) => { const purchases = item.purchases ?? []; const average = purchases.length ? purchases.reduce((sum, entry) => sum + entry.amount, 0) / purchases.length : null; const isListed = items.some((entry) => entry.name.toLowerCase() === item.name.toLowerCase()); return <article className="grocery-row compare-row catalog-row" key={item.id}><div className="food-icon">{icons[item.category] ?? icons.Other}</div><div className="item-main"><strong>{item.name}</strong><small>{item.unit || item.category} · {purchases.length} {purchases.length === 1 ? "purchase" : "purchases"}</small></div><div className="best-price"><strong>{average === null ? "—" : money(average)}</strong><small>{average === null ? "no purchase yet" : "average paid"}</small></div><button className={`catalog-add ${isListed ? "listed" : ""}`} disabled={isListed} onClick={() => addItem(item)}>{isListed ? "On list" : "+ Add to list"}</button><button className="row-menu" title="View price history" onClick={() => setShowHistory(showHistory === item.id ? null : item.id)}><Icon name="history" size={15}/></button><button className="row-menu catalog-delete" aria-label={`Delete ${item.name} from household items`} title="Delete from household items" onClick={() => deleteCatalogItem(item)}><Icon name="trash" size={15}/></button></article>; }) : <div className="empty-state">No household items yet. Add foods below to start your catalog.</div>)}
+              {activeTab === "stores" && <div className="stores-workspace">{visibleStores.map((store) => { const priceCount = items.reduce((count, item) => count + item.prices.filter((price) => price.store === store).length, 0); const cheapestCount = routeGroups.find((route) => route.store === store)?.entries.length ?? 0; return <article className="store-entry" key={store}><span className="store-entry-marker">{storeMarker(store)}</span><span className="store-entry-copy"><strong>{store}</strong><small>{priceCount} tracked {priceCount === 1 ? "price" : "prices"} · {cheapestCount} list {cheapestCount === 1 ? "item" : "items"} cheapest here</small></span></article>; })}{visibleStores.length === 0 && <div className="empty-state">No matching stores. Add it below if Greenhouse shops there.</div>}<form className="store-add-form" onSubmit={addStore}><label className="field-label" htmlFor="new-store">Add a store</label><div className="store-add-controls"><input id="new-store" value={newStore} onChange={(event) => setNewStore(event.target.value)} maxLength={60} placeholder="Store name" required/><button className="primary-button" type="submit"><Icon name="plus" size={15}/> Add store</button></div></form></div>}
+              {activeTab === "community" && <div className="bulletin-workspace"><form className="bulletin-form" onSubmit={postComment}><label className="field-label" htmlFor="comment-author">Your name<input id="comment-author" value={commentAuthor} onChange={(event) => setCommentAuthor(event.target.value)} maxLength={60} placeholder="Name shown with your comment" required/></label><label className="field-label" htmlFor="comment-body">Comment<textarea id="comment-body" value={commentDraft} onChange={(event) => setCommentDraft(event.target.value)} maxLength={1000} rows={4} placeholder="Share a note with the household…" required/></label><div className="bulletin-form-footer"><small>{commentDraft.length}/1000</small><button className="primary-button" type="submit">Post comment</button></div></form><div className="bulletin-list">{visibleComments.map((comment) => <article className="bulletin-comment" key={comment.id}><header><strong>{comment.author}</strong><time dateTime={comment.createdAt}>{new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeStyle: "short" }).format(new Date(comment.createdAt))}</time></header><p>{comment.body}</p></article>)}{visibleComments.length === 0 && <div className="empty-state">{comments.length ? "No comments match your search." : "No comments yet. Start the conversation with the household."}</div>}</div></div>}
             </div>
 
             {activeTab === "list" && <div className="add-item-wrap"><div className="add-item"><span className="add-plus"><Icon name="plus" size={16}/></span><input placeholder="Add something to the list…" value={newItem} onFocus={() => setShowSuggestions(true)} onBlur={() => window.setTimeout(() => setShowSuggestions(false), 150)} onChange={(e) => { setNewItem(e.target.value); setShowSuggestions(true); }} onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); addItem(suggestions[0]); } if (e.key === "Escape") setShowSuggestions(false); }}/><button onMouseDown={(e) => e.preventDefault()} onClick={() => addItem(suggestions[0])}>Add item</button></div>{showSuggestions && suggestions.length > 0 && <div className="autocomplete-menu">{suggestions.map((item) => { const price = best(item); return <button key={item.id} onMouseDown={(e) => e.preventDefault()} onClick={() => addItem(item)}><span className="food-icon">{icons[item.category] ?? icons.Other}</span><span><strong>{item.name}</strong><small>{item.unit || item.category}</small></span>{price && <b>{money(price.amount)} at {price.store}</b>}<em>+ Add</em></button>; })}</div>}</div>}
@@ -354,9 +416,16 @@ export default function Home() {
             {showHistory && <History items={showHistory === "all" ? items : items.filter((i) => i.id === showHistory)} purchasedItems={purchasedItems} onClose={() => setShowHistory(null)}/>}
           </div>
 
-            <aside className="right-column"><div className="route-card"><div className="route-header"><span className="route-icon"><Icon name="cart" size={16}/></span><div><h3>Smart shopping route</h3><p>Fewer stops, better prices</p></div><span className="route-badge">THIS WEEK</span></div><div className="route-list"><div className="route-stop"><span className="route-num">1</span><span className="route-store-logo costco">C</span><span className="route-name"><strong>Costco</strong><small>5 items · save up to $4.80</small></span><span className="route-chevron">›</span></div><div className="route-stop"><span className="route-num">2</span><span className="route-store-logo walmart">W</span><span className="route-name"><strong>Walmart</strong><small>2 items · save up to $1.14</small></span><span className="route-chevron">›</span></div><div className="route-stop"><span className="route-num">3</span><span className="route-store-logo trader">TJ</span><span className="route-name"><strong>Trader Joe's</strong><small>1 item · save up to $0.49</small></span><span className="route-chevron">›</span></div></div><button className="route-action" onClick={() => setActiveTab("prices")}>See all store prices <span>→</span></button></div>
-            <div className="activity-card"><div className="activity-heading"><h3>Recent price updates</h3><button onClick={() => setShowHistory("all")}>View all</button></div><div className="activity-item"><span className="activity-avatar avatar-lilac">M</span><div><strong>Maya added a price</strong><small>Organic whole milk · Costco</small></div><time>2h</time></div><div className="activity-item"><span className="activity-avatar avatar-sky">J</span><div><strong>Jordan updated a price</strong><small>Avocados · Walmart</small></div><time>Yesterday</time></div><div className="activity-item"><span className="activity-avatar avatar-rose">A</span><div><strong>Alex added a price</strong><small>Sourdough bread · Trader Joe's</small></div><time>Oct 16</time></div></div>
-            <div className="tip-card"><span className="tip-sun">✳</span><div><strong>A little tip</strong><p>Upload a CSV after your next shopping trip to keep everyone’s prices fresh.</p></div></div></aside>
+            <aside className="right-column">
+              <div className="route-card">
+                <div className="route-header"><span className="route-icon"><Icon name="cart" size={16}/></span><div><h3>Smart shopping route</h3><p>Ranked by how many list items are cheapest at each store</p></div></div>
+                <div className="route-list">
+                  {routeGroups.map(({ store, entries, total }, index) => <section className="route-stop route-stop-expanded" key={store}><div className="route-stop-heading"><span className="route-num">{index + 1}</span><span className={`route-store-logo ${storeBadgeClass(store)}`}>{storeMarker(store)}</span><span className="route-name"><strong>{store}</strong><small>{entries.length} {entries.length === 1 ? "item" : "items"} at the lowest tracked price</small></span><span className="route-total">{money(total)}</span></div><ul className="route-items">{entries.map(({ item, price }) => <li key={`${store}-${item.id}`}><span>{item.name}</span><strong>{money(price.amount)}</strong></li>)}</ul></section>)}
+                  {routeGroups.length === 0 && <p className="route-empty">Add prices to grocery-list items to build a route.</p>}
+                </div>
+                <button className="route-action" onClick={() => setActiveTab("prices")}>Compare store prices <span>→</span></button>
+              </div>
+            </aside>
           </div>
           <footer className="page-footer"><span>Made for sharing meals and making ends meet.</span><span><i/> {sharedAuthorized ? "Shared with Greenhouse" : "Saved on this device"}</span></footer>
         </div>

@@ -1,6 +1,15 @@
 import { hasHouseholdAccess } from "@/lib/household-access";
 import { readHousehold, writeHousehold, type HouseholdSnapshot } from "@/lib/household-db";
 
+function validComment(value: unknown) {
+  if (!value || typeof value !== "object") return false;
+  const comment = value as Record<string, unknown>;
+  return typeof comment.id === "string" && comment.id.length <= 100
+    && typeof comment.author === "string" && comment.author.trim().length > 0 && comment.author.length <= 60
+    && typeof comment.body === "string" && comment.body.trim().length > 0 && comment.body.length <= 1000
+    && typeof comment.createdAt === "string" && Number.isFinite(Date.parse(comment.createdAt));
+}
+
 function validSnapshot(value: unknown): value is HouseholdSnapshot {
   if (!value || typeof value !== "object") return false;
   const state = value as Record<string, unknown>;
@@ -8,6 +17,12 @@ function validSnapshot(value: unknown): value is HouseholdSnapshot {
     && Array.isArray(state.catalogOnly)
     && Array.isArray(state.purchasedItems)
     && Array.isArray(state.deletedCatalogNames)
+    && Array.isArray(state.stores)
+    && state.stores.length <= 200
+    && state.stores.every((store) => typeof store === "string" && store.trim().length > 0 && store.length <= 60)
+    && Array.isArray(state.comments)
+    && state.comments.length <= 5000
+    && state.comments.every(validComment)
     && state.items.length <= 5000
     && state.catalogOnly.length <= 5000
     && state.purchasedItems.length <= 5000
