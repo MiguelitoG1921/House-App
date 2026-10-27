@@ -152,6 +152,17 @@ button { cursor: pointer; }
 .bulletin-comment header strong { color: #434d44; font-size: 10px; }
 .bulletin-comment time { color: #899289; font-size: 8px; text-align: right; }
 .bulletin-comment p { margin: 8px 0 0; color: #606a61; font-size: 10px; line-height: 1.55; white-space: pre-wrap; overflow-wrap: anywhere; }
+.bulletin-comment-meta { display: inline-flex; align-items: center; gap: 7px; }
+.edited-flair { border-radius: 999px; padding: 3px 7px; color: #526d55; background: #edf4ec; font-size: 8px; font-weight: 700; }
+.comment-actions { display: flex; justify-content: flex-end; gap: 12px; margin-top: 8px; }
+.comment-actions button { border: 0; padding: 3px 0; color: #6a7a69; background: transparent; font: inherit; font-size: 9px; cursor: pointer; }
+.comment-actions button:hover { color: #3e6847; text-decoration: underline; }
+.comment-actions button:last-child { color: #a15c54; }
+.comment-edit { margin-top: 9px; }
+.comment-edit textarea { width: 100%; min-height: 88px; resize: vertical; border: 1px solid #dfe6dc; border-radius: 6px; padding: 9px 10px; color: #3f4941; background: #fff; font: inherit; font-size: 10px; line-height: 1.5; outline-color: #9fc4a7; }
+.comment-edit-actions { display: flex; align-items: center; justify-content: flex-end; gap: 8px; margin-top: 7px; }
+.comment-edit-actions small { margin-right: auto; color: #929991; font-size: 9px; }
+.comment-edit-actions .quiet-button,.comment-edit-actions .primary-button { min-height: 30px; padding: 6px 10px; font-size: 9px; }
 @media (max-width: 500px) {
   .stores-workspace,.bulletin-workspace { padding-right: 10px; padding-left: 10px; }
   .store-add-controls { align-items: stretch; }

@@ -6,7 +6,7 @@ import type { FormEvent } from "react";
 type Store = string;
 type Price = { store: Store; amount: number; date: string };
 type Item = { id: string; name: string; category: string; unit: string; prices: Price[]; purchases?: Price[]; checked: boolean };
-type BulletinComment = { id: string; author: string; body: string; createdAt: string };
+type BulletinComment = { id: string; author: string; body: string; createdAt: string; editedAt?: string };
 type SharedSnapshot = { items: Item[]; catalogOnly: Item[]; purchasedItems: Item[]; deletedCatalogNames: string[]; stores: Store[]; comments: BulletinComment[] };
 
 const defaultStores: Store[] = ["Costco", "Walmart", "Trader Joe's", "Target"];
@@ -77,6 +77,8 @@ export default function Home() {
   const [newStore, setNewStore] = useState("");
   const [commentAuthor, setCommentAuthor] = useState("");
   const [commentDraft, setCommentDraft] = useState("");
+  const [editingCommentId, setEditingCommentId] = useState<string | null>(null);
+  const [editingCommentDraft, setEditingCommentDraft] = useState("");
   const [showSuggestions, setShowSuggestions] = useState(false);
   const [modal, setModal] = useState<{ item: Item; bought: boolean } | null>(null);
   const [purchase, setPurchase] = useState({ store: "Walmart" as Store, amount: "" });
@@ -91,6 +93,7 @@ export default function Home() {
     setDeletedCatalogNames(browser.deletedCatalogNames);
     setStores(browser.stores);
     setComments(browser.comments);
+    setCommentAuthor(localStorage.getItem("greenhouse-comment-author-v1") ?? "");
     setStorageReady(true);
   }, []);
   useEffect(() => { if (storageReady) localStorage.setItem("common-table-groceries-v1", JSON.stringify(items)); }, [items, storageReady]);
@@ -235,7 +238,25 @@ export default function Home() {
     if (!body || !author) return;
     const createdAt = new Date().toISOString();
     setComments((current) => [{ id: crypto.randomUUID(), author, body, createdAt }, ...current]);
+    localStorage.setItem("greenhouse-comment-author-v1", author);
     setCommentDraft("");
+  }
+
+  function saveCommentEdit(commentId: string) {
+    const body = editingCommentDraft.trim();
+    if (!body) return;
+    setComments((current) => current.map((comment) => comment.id === commentId && comment.author.toLowerCase() === commentAuthor.trim().toLowerCase()
+      ? { ...comment, body, editedAt: new Date().toISOString() }
+      : comment));
+    setEditingCommentId(null);
+    setEditingCommentDraft("");
+  }
+
+  function deleteComment(comment: BulletinComment) {
+    if (comment.author.toLowerCase() !== commentAuthor.trim().toLowerCase()) return;
+    if (!window.confirm("Delete your comment? This can’t be undone.")) return;
+    setComments((current) => current.filter((entry) => entry.id !== comment.id));
+    if (editingCommentId === comment.id) setEditingCommentId(null);
   }
 
   const visibleItems = useMemo(() => items.filter((item) => item.name.toLowerCase().includes(query.toLowerCase())), [items, query]);
@@ -408,7 +429,11 @@ export default function Home() {
               {activeTab === "prices" && (visibleItems.length ? visibleItems.map((item) => { const cheapest = best(item); const price = item.prices.filter((p) => p.store === selectedStore).sort((a, b) => a.amount - b.amount)[0]; return <article className="grocery-row compare-row" key={item.id}><div className="food-icon">{icons[item.category] ?? icons.Other}</div><div className="item-main"><strong>{item.name}</strong><small>{item.unit || item.category}</small></div><div className="best-price"><strong>{price ? money(price.amount) : "—"}</strong><small>{price ? `at ${selectedStore}` : "no price yet"}</small></div>{price && cheapest && cheapest.store !== selectedStore ? <span className="price-diff">+{money(price.amount - cheapest.amount)} vs best</span> : price ? <span className="best-tag">Best price</span> : <span className="price-diff">Not tracked</span>}<button className="row-menu" title="View price history" onClick={() => setShowHistory(showHistory === item.id ? null : item.id)}><Icon name="history" size={15}/></button></article>; }) : <div className="empty-state">Add grocery-list items to compare tracked store prices.</div>)}
               {activeTab === "items" && (visibleCatalog.length ? visibleCatalog.map((item) => { const purchases = item.purchases ?? []; const average = purchases.length ? purchases.reduce((sum, entry) => sum + entry.amount, 0) / purchases.length : null; const isListed = items.some((entry) => entry.name.toLowerCase() === item.name.toLowerCase()); return <article className="grocery-row compare-row catalog-row" key={item.id}><div className="food-icon">{icons[item.category] ?? icons.Other}</div><div className="item-main"><strong>{item.name}</strong><small>{item.unit || item.category} · {purchases.length} {purchases.length === 1 ? "purchase" : "purchases"}</small></div><div className="best-price"><strong>{average === null ? "—" : money(average)}</strong><small>{average === null ? "no purchase yet" : "average paid"}</small></div><button className={`catalog-add ${isListed ? "listed" : ""}`} disabled={isListed} onClick={() => addItem(item)}>{isListed ? "On list" : "+ Add to list"}</button><button className="row-menu" title="View price history" onClick={() => setShowHistory(showHistory === item.id ? null : item.id)}><Icon name="history" size={15}/></button><button className="row-menu catalog-delete" aria-label={`Delete ${item.name} from household items`} title="Delete from household items" onClick={() => deleteCatalogItem(item)}><Icon name="trash" size={15}/></button></article>; }) : <div className="empty-state">No household items yet. Add foods below to start your catalog.</div>)}
               {activeTab === "stores" && <div className="stores-workspace">{visibleStores.map((store) => { const priceCount = items.reduce((count, item) => count + item.prices.filter((price) => price.store === store).length, 0); const cheapestCount = routeGroups.find((route) => route.store === store)?.entries.length ?? 0; return <article className="store-entry" key={store}><span className="store-entry-marker">{storeMarker(store)}</span><span className="store-entry-copy"><strong>{store}</strong><small>{priceCount} tracked {priceCount === 1 ? "price" : "prices"} · {cheapestCount} list {cheapestCount === 1 ? "item" : "items"} cheapest here</small></span></article>; })}{visibleStores.length === 0 && <div className="empty-state">No matching stores. Add it below if Greenhouse shops there.</div>}<form className="store-add-form" onSubmit={addStore}><label className="field-label" htmlFor="new-store">Add a store</label><div className="store-add-controls"><input id="new-store" value={newStore} onChange={(event) => setNewStore(event.target.value)} maxLength={60} placeholder="Store name" required/><button className="primary-button" type="submit"><Icon name="plus" size={15}/> Add store</button></div></form></div>}
-              {activeTab === "community" && <div className="bulletin-workspace"><form className="bulletin-form" onSubmit={postComment}><label className="field-label" htmlFor="comment-author">Your name<input id="comment-author" value={commentAuthor} onChange={(event) => setCommentAuthor(event.target.value)} maxLength={60} placeholder="Name shown with your comment" required/></label><label className="field-label" htmlFor="comment-body">Comment<textarea id="comment-body" value={commentDraft} onChange={(event) => setCommentDraft(event.target.value)} maxLength={1000} rows={4} placeholder="Share a note with the household…" required/></label><div className="bulletin-form-footer"><small>{commentDraft.length}/1000</small><button className="primary-button" type="submit">Post comment</button></div></form><div className="bulletin-list">{visibleComments.map((comment) => <article className="bulletin-comment" key={comment.id}><header><strong>{comment.author}</strong><time dateTime={comment.createdAt}>{new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeStyle: "short" }).format(new Date(comment.createdAt))}</time></header><p>{comment.body}</p></article>)}{visibleComments.length === 0 && <div className="empty-state">{comments.length ? "No comments match your search." : "No comments yet. Start the conversation with the household."}</div>}</div></div>}
+              {activeTab === "community" && <div className="bulletin-workspace"><form className="bulletin-form" onSubmit={postComment}><label className="field-label" htmlFor="comment-author">Your name<input id="comment-author" value={commentAuthor} onChange={(event) => setCommentAuthor(event.target.value)} maxLength={60} placeholder="Name shown with your comment" required/></label><label className="field-label" htmlFor="comment-body">Comment<textarea id="comment-body" value={commentDraft} onChange={(event) => setCommentDraft(event.target.value)} maxLength={1000} rows={4} placeholder="Share a note with the household…" required/></label><div className="bulletin-form-footer"><small>{commentDraft.length}/1000</small><button className="primary-button" type="submit">Post comment</button></div></form><div className="bulletin-list">{visibleComments.map((comment) => {
+                const isOwnComment = Boolean(commentAuthor.trim()) && comment.author.toLowerCase() === commentAuthor.trim().toLowerCase();
+                const isEditing = editingCommentId === comment.id;
+                return <article className="bulletin-comment" key={comment.id}><header><strong>{comment.author}</strong><span className="bulletin-comment-meta"><time dateTime={comment.createdAt}>{new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeStyle: "short" }).format(new Date(comment.createdAt))}</time>{comment.editedAt && <span className="edited-flair" title={`Edited ${new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeStyle: "short" }).format(new Date(comment.editedAt))}`}>Edited</span>}</span></header>{isEditing ? <div className="comment-edit"><textarea aria-label="Edit your comment" value={editingCommentDraft} onChange={(event) => setEditingCommentDraft(event.target.value)} maxLength={1000} rows={4}/><div className="comment-edit-actions"><small>{editingCommentDraft.length}/1000</small><button type="button" className="quiet-button" onClick={() => setEditingCommentId(null)}>Cancel</button><button type="button" className="primary-button" disabled={!editingCommentDraft.trim()} onClick={() => saveCommentEdit(comment.id)}>Save edit</button></div></div> : <><p>{comment.body}</p>{isOwnComment && <div className="comment-actions"><button type="button" onClick={() => { setEditingCommentId(comment.id); setEditingCommentDraft(comment.body); }}>Edit</button><button type="button" onClick={() => deleteComment(comment)}>Delete</button></div>}</>}</article>;
+              })}{visibleComments.length === 0 && <div className="empty-state">{comments.length ? "No comments match your search." : "No comments yet. Start the conversation with the household."}</div>}</div></div>}
             </div>
 
             {activeTab === "list" && <div className="add-item-wrap"><div className="add-item"><span className="add-plus"><Icon name="plus" size={16}/></span><input placeholder="Add something to the list…" value={newItem} onFocus={() => setShowSuggestions(true)} onBlur={() => window.setTimeout(() => setShowSuggestions(false), 150)} onChange={(e) => { setNewItem(e.target.value); setShowSuggestions(true); }} onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); addItem(suggestions[0]); } if (e.key === "Escape") setShowSuggestions(false); }}/><button onMouseDown={(e) => e.preventDefault()} onClick={() => addItem(suggestions[0])}>Add item</button></div>{showSuggestions && suggestions.length > 0 && <div className="autocomplete-menu">{suggestions.map((item) => { const price = best(item); return <button key={item.id} onMouseDown={(e) => e.preventDefault()} onClick={() => addItem(item)}><span className="food-icon">{icons[item.category] ?? icons.Other}</span><span><strong>{item.name}</strong><small>{item.unit || item.category}</small></span>{price && <b>{money(price.amount)} at {price.store}</b>}<em>+ Add</em></button>; })}</div>}</div>}

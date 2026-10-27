@@ -7,7 +7,8 @@ function validComment(value: unknown) {
   return typeof comment.id === "string" && comment.id.length <= 100
     && typeof comment.author === "string" && comment.author.trim().length > 0 && comment.author.length <= 60
     && typeof comment.body === "string" && comment.body.trim().length > 0 && comment.body.length <= 1000
-    && typeof comment.createdAt === "string" && Number.isFinite(Date.parse(comment.createdAt));
+    && typeof comment.createdAt === "string" && Number.isFinite(Date.parse(comment.createdAt))
+    && (comment.editedAt === undefined || (typeof comment.editedAt === "string" && Number.isFinite(Date.parse(comment.editedAt))));
 }
 
 function validSnapshot(value: unknown): value is HouseholdSnapshot {
