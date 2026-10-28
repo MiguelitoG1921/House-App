@@ -395,6 +395,27 @@ export default function Home() {
     setModal(null);
     window.setTimeout(() => setNotice(""), 3000);
   }
+  function deletePurchase(itemId: string, purchaseIndex: number) {
+    const archivedItem = purchasedItems.find((item) => item.id === itemId);
+    if (!archivedItem) return;
+    const purchaseHistory = archivedItem.purchases ?? archivedItem.prices;
+    const removedPurchase = purchaseHistory[purchaseIndex];
+    if (!removedPurchase) return;
+    if (!window.confirm(`Remove ${archivedItem.name} from purchase history and add it back to the grocery list?`)) return;
+    const remainingPurchases = purchaseHistory.filter((_, index) => index !== purchaseIndex);
+    const removePurchasePrice = (prices: Price[]) => {
+      const index = prices.findIndex((price) => price.store === removedPurchase.store && price.date === removedPurchase.date && price.amount === removedPurchase.amount && price.unitSize === removedPurchase.unitSize);
+      return index < 0 ? prices : prices.filter((_, priceIndex) => priceIndex !== index);
+    };
+    setPurchasedItems((current) => current.map((item) => item.id === itemId ? { ...item, prices: removePurchasePrice(item.prices), purchases: remainingPurchases } : item));
+    setItems((current) => {
+      const existing = current.find((item) => item.name.toLowerCase() === archivedItem.name.toLowerCase());
+      if (existing) return current.map((item) => item.id === existing.id ? { ...item, prices: removePurchasePrice(item.prices) } : item);
+      return [{ ...archivedItem, id: crypto.randomUUID(), checked: false, prices: removePurchasePrice(archivedItem.prices), purchases: remainingPurchases }, ...current];
+    });
+    setNotice(`${archivedItem.name} added back to the grocery list`);
+    window.setTimeout(() => setNotice(""), 3000);
+  }
   function importPrices(file?: File) {
     if (!file) return;
     const reader = new FileReader();
@@ -474,7 +495,7 @@ export default function Home() {
 
             {activeTab === "list" && <div className="add-item-wrap"><div className="add-item"><span className="add-plus"><Icon name="plus" size={16}/></span><input placeholder="Add something to the list…" value={newItem} onFocus={() => setShowSuggestions(true)} onBlur={() => window.setTimeout(() => setShowSuggestions(false), 150)} onChange={(e) => { setNewItem(e.target.value); setShowSuggestions(true); }} onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); addItem(suggestions[0]); } if (e.key === "Escape") setShowSuggestions(false); }}/><button onMouseDown={(e) => e.preventDefault()} onClick={() => addItem(suggestions[0])}>Add item</button></div>{showSuggestions && suggestions.length > 0 && <div className="autocomplete-menu">{suggestions.map((item) => { const price = best(item); return <button key={item.id} onMouseDown={(e) => e.preventDefault()} onClick={() => addItem(item)}><span className="food-icon">{icons[item.category] ?? icons.Other}</span><span><strong>{item.name}</strong><small>{item.unit || item.category}</small></span>{price && <b>{money(price.amount)} at {price.store}</b>}<em>+ Add</em></button>; })}</div>}</div>}
             {activeTab === "items" && <div className="catalog-create"><div><strong>Add a food to the catalog</strong><small>Keep it here for future lists, even if you don’t need it today.</small></div><div className="catalog-create-input"><input placeholder="Food item name" value={newCatalogItem} onChange={(e) => setNewCatalogItem(e.target.value)} onKeyDown={(e) => e.key === "Enter" && addCatalogItem()}/><button onClick={addCatalogItem}><Icon name="plus" size={15}/> Add item</button></div></div>}
-            {showHistory && <History items={showHistory === "all" ? items : items.filter((i) => i.id === showHistory)} purchasedItems={purchasedItems} onClose={() => setShowHistory(null)}/>}
+            {showHistory && <History items={showHistory === "all" ? items : items.filter((i) => i.id === showHistory)} purchasedItems={purchasedItems} onClose={() => setShowHistory(null)} onDeletePurchase={deletePurchase}/>}
           </div>
 
             <aside className="right-column">
@@ -499,14 +520,19 @@ export default function Home() {
   );
 }
 
-function History({ items, purchasedItems, onClose }: { items: Item[]; purchasedItems: Item[]; onClose: () => void }) {
+function History({ items, purchasedItems, onClose, onDeletePurchase }: { items: Item[]; purchasedItems: Item[]; onClose: () => void; onDeletePurchase: (itemId: string, purchaseIndex: number) => void }) {
   const today = new Date();
   const [exportRange, setExportRange] = useState<"month" | "year" | "all">("month");
   const [exportMonth, setExportMonth] = useState(`${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, "0")}`);
   const [exportYear, setExportYear] = useState(String(today.getFullYear()));
   const all = [...items, ...purchasedItems];
-  const prices = all.flatMap((item) => item.prices.map((price) => ({ ...price, name: item.name }))).sort((a, b) => b.date.localeCompare(a.date));
-  const purchaseRows = purchasedItems.flatMap((item) => (item.purchases?.length ? item.purchases : item.prices).map((price) => ({ ...price, name: item.name })));
+  const samePrice = (left: Price, right: Price) => left.store === right.store && left.date === right.date && left.amount === right.amount && left.unitSize === right.unitSize;
+  const prices = all.flatMap((item) => item.prices.map((price) => {
+    const archive = purchasedItems.find((entry) => entry.name.toLowerCase() === item.name.toLowerCase());
+    const purchaseIndex = archive ? (archive.purchases ?? archive.prices).findIndex((purchase) => samePrice(purchase, price)) : -1;
+    return { ...price, name: item.name, purchaseOwnerId: purchaseIndex >= 0 ? archive?.id : undefined, purchaseIndex };
+  })).sort((a, b) => b.date.localeCompare(a.date));
+  const purchaseRows = purchasedItems.flatMap((item) => (item.purchases ?? item.prices).map((price) => ({ ...price, name: item.name })));
   const years = [...new Set([String(today.getFullYear()), ...purchaseRows.map((row) => row.date.slice(0, 4))])].sort((a, b) => b.localeCompare(a));
   const exportableRows = purchaseRows.filter((row) => exportRange === "all" || (exportRange === "month" ? row.date.slice(0, 7) === exportMonth : row.date.slice(0, 4) === exportYear));
   function exportToGoogleSheets() {
@@ -531,5 +557,5 @@ function History({ items, purchasedItems, onClose }: { items: Item[]; purchasedI
     link.remove();
     window.setTimeout(() => URL.revokeObjectURL(blobUrl), 1000);
   }
-  return <div className="history-popover"><div className="history-head"><strong>Purchase history</strong><button onClick={onClose}>×</button></div><section className="history-export"><strong>Export for Google Sheets</strong><small>Download a CSV you can open in Google Sheets.</small><div className="history-export-controls"><select aria-label="Export date range" value={exportRange} onChange={(event) => setExportRange(event.target.value as typeof exportRange)}><option value="month">By month</option><option value="year">By year</option><option value="all">Total to date</option></select>{exportRange === "month" && <input aria-label="Choose month" type="month" value={exportMonth} onChange={(event) => setExportMonth(event.target.value)}/ >}{exportRange === "year" && <select aria-label="Choose year" value={exportYear} onChange={(event) => setExportYear(event.target.value)}>{years.map((year) => <option key={year} value={year}>{year}</option>)}</select>}<button type="button" className="primary-button" onClick={exportToGoogleSheets} disabled={!exportableRows.length}>Export</button></div></section>{prices.slice(0, 12).map((p, i) => <div className="history-line" key={`${p.name}-${p.store}-${p.date}-${i}`}><span><strong>{p.name}</strong><small>{p.store} · {p.date}{p.unitSize ? ` · ${p.unitSize} (${priceLabel(p)})` : ""}</small></span><b>{money(p.amount)}</b></div>)}{prices.length === 0 && <p className="history-empty">Your household’s purchases will show up here.</p>}</div>;
+  return <div className="history-popover"><div className="history-head"><strong>Purchase history</strong><button onClick={onClose}>×</button></div><section className="history-export"><strong>Export for Google Sheets</strong><small>Download a CSV you can open in Google Sheets.</small><div className="history-export-controls"><select aria-label="Export date range" value={exportRange} onChange={(event) => setExportRange(event.target.value as typeof exportRange)}><option value="month">By month</option><option value="year">By year</option><option value="all">Total to date</option></select>{exportRange === "month" && <input aria-label="Choose month" type="month" value={exportMonth} onChange={(event) => setExportMonth(event.target.value)}/>}{exportRange === "year" && <select aria-label="Choose year" value={exportYear} onChange={(event) => setExportYear(event.target.value)}>{years.map((year) => <option key={year} value={year}>{year}</option>)}</select>}<button type="button" className="primary-button" onClick={exportToGoogleSheets} disabled={!exportableRows.length}>Export</button></div></section>{prices.slice(0, 12).map((p, i) => <div className="history-line" key={`${p.name}-${p.store}-${p.date}-${i}`}><span><strong>{p.name}</strong><small>{p.store} · {p.date}{p.unitSize ? ` · ${p.unitSize} (${priceLabel(p)})` : ""}</small></span><div className="history-line-actions"><b>{money(p.amount)}</b>{p.purchaseOwnerId && <button type="button" className="history-delete" title="Delete this purchase and add the item back to the grocery list" aria-label={`Delete ${p.name} purchase and return it to the grocery list`} onClick={() => onDeletePurchase(p.purchaseOwnerId!, p.purchaseIndex)}><Icon name="trash" size={14}/></button>}</div></div>)}{prices.length === 0 && <p className="history-empty">Your household’s purchases will show up here.</p>}</div>;
 }
