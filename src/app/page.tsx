@@ -4,8 +4,8 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import type { FormEvent } from "react";
 
 type Store = string;
-type Price = { store: Store; amount: number; date: string };
-type Item = { id: string; name: string; category: string; unit: string; prices: Price[]; purchases?: Price[]; checked: boolean };
+type Price = { store: Store; amount: number; date: string; unitSize?: string; unitPrice?: number };
+type Item = { id: string; name: string; category: string; unit: string; units?: string[]; prices: Price[]; purchases?: Price[]; checked: boolean };
 type BulletinComment = { id: string; author: string; body: string; createdAt: string; editedAt?: string };
 type SharedSnapshot = { items: Item[]; catalogOnly: Item[]; purchasedItems: Item[]; deletedCatalogNames: string[]; stores: Store[]; comments: BulletinComment[] };
 
@@ -28,7 +28,24 @@ function readBrowserSnapshot(): SharedSnapshot {
 
 const initialItems: Item[] = [];
 const money = (n: number) => `$${n.toFixed(2)}`;
-const best = (item: Item) => item.prices.reduce<Price | null>((min, p) => !min || p.amount < min.amount ? p : min, null);
+function parseUnitSize(size: string) {
+  const match = size.trim().match(/^(\d+(?:\.\d+)?)\s*(.+)$/);
+  if (!match) return null;
+  const quantity = Number(match[1]);
+  const unit = match[2].trim().toLowerCase();
+  return quantity > 0 && unit ? { quantity, unit } : null;
+}
+const unitRate = (price: Price) => price.unitPrice ?? (price.unitSize ? price.amount / (parseUnitSize(price.unitSize)?.quantity ?? 1) : price.amount);
+const unitLabel = (price: Price) => parseUnitSize(price.unitSize ?? "")?.unit ?? "item";
+const unitSizeSummary = (price: Price) => price.unitSize ?? "unit unavailable";
+const priceLabel = (price: Price) => `${money(unitRate(price))} / ${unitLabel(price)}`;
+const best = (item: Item) => {
+  const prices = item.prices;
+  if (!prices.length) return null;
+  const comparisonUnit = unitLabel(prices[prices.length - 1]);
+  const comparable = prices.filter((price) => unitLabel(price) === comparisonUnit);
+  return comparable.reduce<Price | null>((min, price) => !min || unitRate(price) < unitRate(min) ? price : min, null);
+};
 const icons: Record<string, string> = { Produce: "🥑", Dairy: "🥛", Pantry: "🥫", Bakery: "🍞", Other: "🛒" };
 const storeMarker = (store: Store) => store.split(/\s+/).map((word) => word[0]).join("").slice(0, 2).toUpperCase();
 const storeBadgeClass = (store: Store) => store.toLowerCase().includes("costco") ? "costco" : store.toLowerCase().includes("walmart") ? "walmart" : store.toLowerCase().includes("trader") ? "trader" : "store-generic";
@@ -81,7 +98,7 @@ export default function Home() {
   const [editingCommentDraft, setEditingCommentDraft] = useState("");
   const [showSuggestions, setShowSuggestions] = useState(false);
   const [modal, setModal] = useState<{ item: Item; bought: boolean } | null>(null);
-  const [purchase, setPurchase] = useState({ store: "Walmart" as Store, amount: "" });
+  const [purchase, setPurchase] = useState({ store: "Walmart" as Store, amount: "", unitSize: "", priceMode: "total" as "total" | "per-unit" });
   const [showHistory, setShowHistory] = useState<string | null>(null);
   const [notice, setNotice] = useState("");
 
@@ -273,8 +290,11 @@ export default function Home() {
     for (const item of items) {
       const cheapest = best(item);
       if (!cheapest) continue;
-      const cheapestStores = new Set(item.prices.filter((price) => price.amount === cheapest.amount).map((price) => price.store));
-      for (const store of cheapestStores) grouped.set(store, [...(grouped.get(store) ?? []), { item, price: cheapest }]);
+      const cheapestStores = new Set(item.prices.filter((price) => unitLabel(price) === unitLabel(cheapest) && unitRate(price) === unitRate(cheapest)).map((price) => price.store));
+      for (const store of cheapestStores) {
+        const storePrice = item.prices.filter((price) => price.store === store && unitLabel(price) === unitLabel(cheapest)).sort((a, b) => unitRate(a) - unitRate(b))[0];
+        if (storePrice) grouped.set(store, [...(grouped.get(store) ?? []), { item, price: storePrice }]);
+      }
     }
     return [...grouped.entries()]
       .map(([store, entries]) => ({ store, entries, total: entries.reduce((sum, entry) => sum + entry.price.amount, 0) }))
@@ -346,18 +366,25 @@ export default function Home() {
     window.setTimeout(() => setNotice(""), 3000);
   }
   function removeItem(item: Item) {
-    setPurchase({ store: "Walmart", amount: "" });
+    setPurchase({ store: stores[0] ?? "Walmart", amount: "", unitSize: item.units?.[0] ?? "", priceMode: "total" });
     setModal({ item, bought: true });
   }
   function confirmRemoval() {
     if (!modal) return;
-    if (modal.bought && purchase.amount && Number(purchase.amount) > 0) {
+    const unitSize = purchase.unitSize.trim();
+    const parsedSize = parseUnitSize(unitSize);
+    if (modal.bought && (!purchase.amount || Number(purchase.amount) <= 0 || !parsedSize)) return;
+    if (modal.bought) {
+      if (!parsedSize) return;
+      const size = parsedSize;
       setItems((list) => list.filter((item) => item.id !== modal.item.id));
-      const purchaseEntry = { store: purchase.store, amount: Number(purchase.amount), date: new Date().toISOString().slice(0, 10) };
+      const enteredAmount = Number(purchase.amount);
+      const total = purchase.priceMode === "per-unit" ? enteredAmount * size.quantity : enteredAmount;
+      const purchaseEntry: Price = { store: purchase.store, amount: total, unitSize, unitPrice: purchase.priceMode === "per-unit" ? enteredAmount : enteredAmount / size.quantity, date: new Date().toISOString().slice(0, 10) };
       setPurchasedItems((list) => {
         const existing = list.find((entry) => entry.name.toLowerCase() === modal.item.name.toLowerCase());
-        if (existing) return list.map((entry) => entry.id === existing.id ? { ...entry, prices: [...entry.prices, purchaseEntry], purchases: [...(entry.purchases ?? []), purchaseEntry] } : entry);
-        return [{ ...modal.item, prices: [...modal.item.prices, purchaseEntry], purchases: [purchaseEntry] }, ...list];
+        if (existing) return list.map((entry) => entry.id === existing.id ? { ...entry, units: [...new Set([...(entry.units ?? []), ...(modal.item.units ?? []), unitSize])], prices: [...entry.prices, purchaseEntry], purchases: [...(entry.purchases ?? []), purchaseEntry] } : entry);
+        return [{ ...modal.item, units: [...new Set([...(modal.item.units ?? []), unitSize])], prices: [...modal.item.prices, purchaseEntry], purchases: [purchaseEntry] }, ...list];
       });
       setNotice(`${modal.item.name} purchase saved`);
     } else {
@@ -376,13 +403,22 @@ export default function Home() {
       let count = 0;
       setItems((list) => list.map((item) => {
         const row = rows.find((cells, i) => i > 0 && cells[0]?.toLowerCase() === item.name.toLowerCase());
-        if (!row || !row[1] || !row[2] || !Number(row[2])) return item;
+        const unitSize = row?.[4]?.trim();
+        const parsedSize = unitSize ? parseUnitSize(unitSize) : null;
+        if (!row || !row[1] || !row[2] || !Number(row[2]) || Number(row[2]) <= 0 || !parsedSize) return item;
+        const savedUnitSize = unitSize!;
+        const size = parsedSize!;
         const store = stores.find((s) => s.toLowerCase() === row[1].toLowerCase());
         if (!store) return item;
         count++;
-        return { ...item, prices: [...item.prices, { store, amount: Number(row[2]), date: row[3] || new Date().toISOString().slice(0, 10) }] };
+        const enteredAmount = Number(row[2]);
+        const perUnit = row[5]?.trim().toLowerCase() === "per-unit";
+        const amount = perUnit ? enteredAmount * size.quantity : enteredAmount;
+        const unitPrice = perUnit ? enteredAmount : enteredAmount / size.quantity;
+        const price: Price = { store, amount, unitSize: savedUnitSize, unitPrice, date: row[3] || new Date().toISOString().slice(0, 10) };
+        return { ...item, units: [...new Set([...(item.units ?? []), savedUnitSize])], prices: [...item.prices, price] };
       }));
-      setNotice(`${count} price${count === 1 ? "" : "s"} added from ${file.name}`);
+      setNotice(`${count} price${count === 1 ? "" : "s"} added. Each CSV row needs item, store, price, date, and unit size; use “per-unit” in column 6 for per-unit prices.`);
       window.setTimeout(() => setNotice(""), 3500);
     };
     reader.readAsText(file);
@@ -409,7 +445,7 @@ export default function Home() {
         {!sharedConfigured && <div className="sync-banner"><strong>Changes are saved on this device only.</strong><span>To sync Greenhouse across phones and computers, configure the shared database and household access code.</span></div>}
         {sharedConfigured && syncStatus === "offline" && <div className="sync-banner"><strong>Can’t reach Greenhouse right now.</strong><span>Your changes are saved on this device and will sync when the connection returns.</span></div>}
         <div className="content">
-          <div className="welcome-row"><div><div className="eyebrow">GREENHOUSE COOPERATIVE · 12 MEMBERS</div><h1>{pageHeading}</h1><p>{pageDescription}</p></div>{(activeTab === "list" || activeTab === "prices") && <label className="upload-button"><Icon name="upload" size={17}/> Upload prices<input type="file" accept=".csv,text/csv" onChange={(e) => importPrices(e.target.files?.[0])}/></label>}</div>
+          <div className="welcome-row"><div><div className="eyebrow">GREENHOUSE COOPERATIVE · 12 MEMBERS</div><h1>{pageHeading}</h1><p>{pageDescription}</p></div>{(activeTab === "list" || activeTab === "prices") && <label className="upload-button" title="CSV columns: item, store, price, date, unit size, optional per-unit"><Icon name="upload" size={17}/> Upload prices<input type="file" accept=".csv,text/csv" onChange={(e) => importPrices(e.target.files?.[0])}/></label>}</div>
 
           <div className="summary-grid"><div className="summary-card"><span className="summary-icon mint"><Icon name="cart"/></span><div><small>ON THE LIST</small><strong>{items.length} <em>items</em></strong></div></div><div className="summary-card"><span className="summary-icon peach"><Icon name="chart"/></span><div><small>PRICES TRACKED</small><strong>{tracked} <em>of {items.length} items</em></strong></div></div><div className="summary-card savings-card"><span className="summary-icon yellow"><Icon name="money"/></span><div><small>STORES WITH BEST PRICES</small><strong>{routeGroups.length} <em>{routeGroups.length === 1 ? "location" : "locations"}</em></strong></div></div></div>
 
@@ -423,10 +459,10 @@ export default function Home() {
               {activeTab === "list" && (groups.length ? groups.map(([store, grouped]) => (
                 <section className="store-group" key={store}>
                   <div className="group-header"><span className="store-marker">{store === "No price yet" ? "·" : storeMarker(store)}</span><strong>{store === "No price yet" ? "Still need a price" : `Cheapest at ${store}`}</strong><span className="group-count">{grouped.length}</span><span className="group-rule"/></div>
-                  {grouped.map((item) => { const cheapest = best(item); return <article className="grocery-row" key={item.id}><button className="check-box" aria-label={`Mark ${item.name} bought`} onClick={() => removeItem(item)}><span/></button><div className="food-icon">{icons[item.category] ?? icons.Other}</div><div className="item-main"><strong>{item.name}</strong><small>{item.unit || item.category}</small></div>{cheapest ? <div className="best-price"><strong>{money(cheapest.amount)}</strong><small>best price</small></div> : <div className="best-price"><strong>—</strong><small>add a price</small></div>}<button className="compare-link" onClick={() => { setSelectedStore(stores[0] ?? ""); setActiveTab("prices"); }}>Compare</button><button className="row-menu" title="Remove item" onClick={() => setModal({ item, bought: false })}><Icon name="trash" size={15}/></button></article>; })}
+                  {grouped.map((item) => { const cheapest = best(item); return <article className="grocery-row" key={item.id}><button className="check-box" aria-label={`Mark ${item.name} bought`} onClick={() => removeItem(item)}><span/></button><div className="food-icon">{icons[item.category] ?? icons.Other}</div><div className="item-main"><strong>{item.name}</strong><small>{item.unit || item.category}</small></div>{cheapest ? <div className="best-price"><strong>{priceLabel(cheapest)}</strong><small>best unit price</small></div> : <div className="best-price"><strong>—</strong><small>add a price</small></div>}<button className="compare-link" onClick={() => { setSelectedStore(stores[0] ?? ""); setActiveTab("prices"); }}>Compare</button><button className="row-menu" title="Remove item" onClick={() => setModal({ item, bought: false })}><Icon name="trash" size={15}/></button></article>; })}
                 </section>
               )) : <div className="empty-state">Your grocery list is clear. Add an item below when you need it.</div>)}
-              {activeTab === "prices" && (visibleItems.length ? visibleItems.map((item) => { const cheapest = best(item); const price = item.prices.filter((p) => p.store === selectedStore).sort((a, b) => a.amount - b.amount)[0]; return <article className="grocery-row compare-row" key={item.id}><div className="food-icon">{icons[item.category] ?? icons.Other}</div><div className="item-main"><strong>{item.name}</strong><small>{item.unit || item.category}</small></div><div className="best-price"><strong>{price ? money(price.amount) : "—"}</strong><small>{price ? `at ${selectedStore}` : "no price yet"}</small></div>{price && cheapest && cheapest.store !== selectedStore ? <span className="price-diff">+{money(price.amount - cheapest.amount)} vs best</span> : price ? <span className="best-tag">Best price</span> : <span className="price-diff">Not tracked</span>}<button className="row-menu" title="View price history" onClick={() => setShowHistory(showHistory === item.id ? null : item.id)}><Icon name="history" size={15}/></button></article>; }) : <div className="empty-state">Add grocery-list items to compare tracked store prices.</div>)}
+              {activeTab === "prices" && (visibleItems.length ? visibleItems.map((item) => { const cheapest = best(item); const price = item.prices.filter((p) => p.store === selectedStore).sort((a, b) => unitRate(a) - unitRate(b))[0]; const comparable = price && cheapest && unitLabel(price) === unitLabel(cheapest); return <article className="grocery-row compare-row" key={item.id}><div className="food-icon">{icons[item.category] ?? icons.Other}</div><div className="item-main"><strong>{item.name}</strong><small>{item.unit || item.category}</small></div><div className="best-price"><strong>{price ? priceLabel(price) : "—"}</strong><small>{price ? `${selectedStore} · ${money(price.amount)} total` : "no price yet"}</small></div>{price && cheapest && comparable && cheapest.store !== selectedStore ? <span className="price-diff">+{money(unitRate(price) - unitRate(cheapest))} / {unitLabel(price)}</span> : price && comparable ? <span className="best-tag">Best unit price</span> : price ? <span className="price-diff">Different unit</span> : <span className="price-diff">Not tracked</span>}<button className="row-menu" title="View price history" onClick={() => setShowHistory(showHistory === item.id ? null : item.id)}><Icon name="history" size={15}/></button></article>; }) : <div className="empty-state">Add grocery-list items to compare tracked store prices.</div>)}
               {activeTab === "items" && (visibleCatalog.length ? visibleCatalog.map((item) => { const purchases = item.purchases ?? []; const average = purchases.length ? purchases.reduce((sum, entry) => sum + entry.amount, 0) / purchases.length : null; const isListed = items.some((entry) => entry.name.toLowerCase() === item.name.toLowerCase()); return <article className="grocery-row compare-row catalog-row" key={item.id}><div className="food-icon">{icons[item.category] ?? icons.Other}</div><div className="item-main"><strong>{item.name}</strong><small>{item.unit || item.category} · {purchases.length} {purchases.length === 1 ? "purchase" : "purchases"}</small></div><div className="best-price"><strong>{average === null ? "—" : money(average)}</strong><small>{average === null ? "no purchase yet" : "average paid"}</small></div><button className={`catalog-add ${isListed ? "listed" : ""}`} disabled={isListed} onClick={() => addItem(item)}>{isListed ? "On list" : "+ Add to list"}</button><button className="row-menu" title="View price history" onClick={() => setShowHistory(showHistory === item.id ? null : item.id)}><Icon name="history" size={15}/></button><button className="row-menu catalog-delete" aria-label={`Delete ${item.name} from household items`} title="Delete from household items" onClick={() => deleteCatalogItem(item)}><Icon name="trash" size={15}/></button></article>; }) : <div className="empty-state">No household items yet. Add foods below to start your catalog.</div>)}
               {activeTab === "stores" && <div className="stores-workspace">{visibleStores.map((store) => { const priceCount = items.reduce((count, item) => count + item.prices.filter((price) => price.store === store).length, 0); const cheapestCount = routeGroups.find((route) => route.store === store)?.entries.length ?? 0; return <article className="store-entry" key={store}><span className="store-entry-marker">{storeMarker(store)}</span><span className="store-entry-copy"><strong>{store}</strong><small>{priceCount} tracked {priceCount === 1 ? "price" : "prices"} · {cheapestCount} list {cheapestCount === 1 ? "item" : "items"} cheapest here</small></span></article>; })}{visibleStores.length === 0 && <div className="empty-state">No matching stores. Add it below if Greenhouse shops there.</div>}<form className="store-add-form" onSubmit={addStore}><label className="field-label" htmlFor="new-store">Add a store</label><div className="store-add-controls"><input id="new-store" value={newStore} onChange={(event) => setNewStore(event.target.value)} maxLength={60} placeholder="Store name" required/><button className="primary-button" type="submit"><Icon name="plus" size={15}/> Add store</button></div></form></div>}
               {activeTab === "community" && <div className="bulletin-workspace"><form className="bulletin-form" onSubmit={postComment}><label className="field-label" htmlFor="comment-author">Your name<input id="comment-author" value={commentAuthor} onChange={(event) => setCommentAuthor(event.target.value)} maxLength={60} placeholder="Name shown with your comment" required/></label><label className="field-label" htmlFor="comment-body">Comment<textarea id="comment-body" value={commentDraft} onChange={(event) => setCommentDraft(event.target.value)} maxLength={1000} rows={4} placeholder="Share a note with the household…" required/></label><div className="bulletin-form-footer"><small>{commentDraft.length}/1000</small><button className="primary-button" type="submit">Post comment</button></div></form><div className="bulletin-list">{visibleComments.map((comment) => {
@@ -445,7 +481,7 @@ export default function Home() {
               <div className="route-card">
                 <div className="route-header"><span className="route-icon"><Icon name="cart" size={16}/></span><div><h3>Smart shopping route</h3><p>Ranked by how many list items are cheapest at each store</p></div></div>
                 <div className="route-list">
-                  {routeGroups.map(({ store, entries, total }, index) => <section className="route-stop route-stop-expanded" key={store}><div className="route-stop-heading"><span className="route-num">{index + 1}</span><span className={`route-store-logo ${storeBadgeClass(store)}`}>{storeMarker(store)}</span><span className="route-name"><strong>{store}</strong><small>{entries.length} {entries.length === 1 ? "item" : "items"} at the lowest tracked price</small></span><span className="route-total">{money(total)}</span></div><ul className="route-items">{entries.map(({ item, price }) => <li key={`${store}-${item.id}`}><span>{item.name}</span><strong>{money(price.amount)}</strong></li>)}</ul></section>)}
+                  {routeGroups.map(({ store, entries, total }, index) => <section className="route-stop route-stop-expanded" key={store}><div className="route-stop-heading"><span className="route-num">{index + 1}</span><span className={`route-store-logo ${storeBadgeClass(store)}`}>{storeMarker(store)}</span><span className="route-name"><strong>{store}</strong><small>{entries.length} {entries.length === 1 ? "item" : "items"} at the lowest tracked unit price</small></span><span className="route-total">{money(total)}</span></div><ul className="route-items">{entries.map(({ item, price }) => <li key={`${store}-${item.id}`}><span>{item.name} · {unitSizeSummary(price)}</span><strong>{priceLabel(price)}</strong></li>)}</ul></section>)}
                   {routeGroups.length === 0 && <p className="route-empty">Add prices to grocery-list items to build a route.</p>}
                 </div>
                 <button className="route-action" onClick={() => setActiveTab("prices")}>Compare store prices <span>→</span></button>
@@ -456,7 +492,7 @@ export default function Home() {
         </div>
       </section>
 
-      {modal && <div className="modal-backdrop" onClick={(e) => e.target === e.currentTarget && setModal(null)}><section className="purchase-modal"><button className="modal-close" onClick={() => setModal(null)}>×</button><span className="modal-icon">{modal.bought ? "🛍️" : "📝"}</span><h2>{modal.bought ? `Did you buy ${modal.item.name}?` : `Remove ${modal.item.name}?`}</h2><p>{modal.bought ? "If you picked it up, save the price for the whole house." : "This item will be removed from the shared list."}</p>{modal.bought && <><label className="field-label">Store<select value={purchase.store} onChange={(e) => setPurchase({ ...purchase, store: e.target.value as Store })}>{stores.map((s) => <option key={s}>{s}</option>)}</select></label><label className="field-label">What did it cost?<span className="amount-input"><span>$</span><input type="number" min="0.01" step="0.01" placeholder="0.00" value={purchase.amount} onChange={(e) => setPurchase({ ...purchase, amount: e.target.value })}/></span></label></>}<div className="modal-actions">{modal.bought ? <button className="quiet-button" onClick={() => setModal({ ...modal, bought: false })}>Not bought</button> : <button className="quiet-button" onClick={() => setModal(null)}>Cancel</button>}<button className="primary-button" onClick={confirmRemoval}>{modal.bought ? "Save & remove" : "Remove item"}</button></div></section></div>}
+      {modal && <div className="modal-backdrop" onClick={(e) => e.target === e.currentTarget && setModal(null)}><section className="purchase-modal"><button className="modal-close" onClick={() => setModal(null)}>×</button><span className="modal-icon">{modal.bought ? "🛍️" : "📝"}</span><h2>{modal.bought ? `Did you buy ${modal.item.name}?` : `Remove ${modal.item.name}?`}</h2><p>{modal.bought ? "Save the unit size and price so the household can compare value." : "This item will be removed from the shared list."}</p>{modal.bought && <><label className="field-label">Store<select value={purchase.store} onChange={(e) => setPurchase({ ...purchase, store: e.target.value as Store })}>{stores.map((s) => <option key={s}>{s}</option>)}</select></label><label className="field-label">Unit size<input className="unit-size-input" list={`saved-units-${modal.item.id}`} placeholder="For example, 2 lb or 1 dozen" value={purchase.unitSize} onChange={(e) => setPurchase({ ...purchase, unitSize: e.target.value })} required/><datalist id={`saved-units-${modal.item.id}`}>{modal.item.units?.map((unit) => <option key={unit} value={unit}/>)}</datalist><small className="unit-hint">New sizes are saved with this food for next time. Use a number and unit, like “2 lb”.</small></label><label className="field-label">Enter price as<select value={purchase.priceMode} onChange={(e) => setPurchase({ ...purchase, priceMode: e.target.value as "total" | "per-unit" })}><option value="total">Total package price</option><option value="per-unit">Price per {unitLabel({ amount: 0, store: purchase.store, date: "", unitSize: purchase.unitSize })}</option></select></label><label className="field-label">{purchase.priceMode === "per-unit" ? `Price per ${unitLabel({ amount: 0, store: purchase.store, date: "", unitSize: purchase.unitSize })}` : "Total price paid"}<span className="amount-input"><span>$</span><input type="number" min="0.01" step="0.01" placeholder="0.00" value={purchase.amount} onChange={(e) => setPurchase({ ...purchase, amount: e.target.value })} required/></span></label>{purchase.priceMode === "per-unit" && parseUnitSize(purchase.unitSize) && purchase.amount && <small className="unit-hint">Estimated total: {money(Number(purchase.amount) * parseUnitSize(purchase.unitSize)!.quantity)}</small>}</> }<div className="modal-actions">{modal.bought ? <button className="quiet-button" onClick={() => setModal({ ...modal, bought: false })}>Not bought</button> : <button className="quiet-button" onClick={() => setModal(null)}>Cancel</button>}<button className="primary-button" disabled={modal.bought && (!purchase.amount || Number(purchase.amount) <= 0 || !parseUnitSize(purchase.unitSize))} onClick={confirmRemoval}>{modal.bought ? "Save & remove" : "Remove item"}</button></div></section></div>}
       {sharedConfigured && !sharedAuthorized && <div className="modal-backdrop access-backdrop"><section className="purchase-modal access-modal"><span className="modal-icon"><Icon name="history"/></span><h2>Connect to Greenhouse</h2><p>Enter the household access code to load the shared grocery list, items, prices, and purchase history on this device.</p><form onSubmit={connectHousehold}><label className="field-label">Household access code<input className="access-code-input" type="password" autoComplete="current-password" value={accessCode} onChange={(e) => setAccessCode(e.target.value)} required/></label>{accessError && <p className="access-error">{accessError}</p>}<button className="primary-button access-submit" type="submit" disabled={syncStatus === "connecting"}>{syncStatus === "connecting" ? "Connecting…" : "Connect to shared data"}</button></form></section></div>}
       {notice && <div className="toast">✓ &nbsp;{notice}</div>}
     </main>
@@ -466,5 +502,5 @@ export default function Home() {
 function History({ items, purchasedItems, onClose }: { items: Item[]; purchasedItems: Item[]; onClose: () => void }) {
   const all = [...items, ...purchasedItems];
   const prices = all.flatMap((item) => item.prices.map((price) => ({ ...price, name: item.name }))).sort((a, b) => b.date.localeCompare(a.date));
-  return <div className="history-popover"><div className="history-head"><strong>Purchase history</strong><button onClick={onClose}>×</button></div>{prices.slice(0, 12).map((p, i) => <div className="history-line" key={`${p.name}-${p.store}-${p.date}-${i}`}><span><strong>{p.name}</strong><small>{p.store} · {p.date}</small></span><b>{money(p.amount)}</b></div>)}{prices.length === 0 && <p className="history-empty">Your household’s purchases will show up here.</p>}</div>;
+  return <div className="history-popover"><div className="history-head"><strong>Purchase history</strong><button onClick={onClose}>×</button></div>{prices.slice(0, 12).map((p, i) => <div className="history-line" key={`${p.name}-${p.store}-${p.date}-${i}`}><span><strong>{p.name}</strong><small>{p.store} · {p.date}{p.unitSize ? ` · ${p.unitSize} (${priceLabel(p)})` : ""}</small></span><b>{money(p.amount)}</b></div>)}{prices.length === 0 && <p className="history-empty">Your household’s purchases will show up here.</p>}</div>;
 }
