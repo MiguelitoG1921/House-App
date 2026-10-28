@@ -500,7 +500,36 @@ export default function Home() {
 }
 
 function History({ items, purchasedItems, onClose }: { items: Item[]; purchasedItems: Item[]; onClose: () => void }) {
+  const today = new Date();
+  const [exportRange, setExportRange] = useState<"month" | "year" | "all">("month");
+  const [exportMonth, setExportMonth] = useState(`${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, "0")}`);
+  const [exportYear, setExportYear] = useState(String(today.getFullYear()));
   const all = [...items, ...purchasedItems];
   const prices = all.flatMap((item) => item.prices.map((price) => ({ ...price, name: item.name }))).sort((a, b) => b.date.localeCompare(a.date));
-  return <div className="history-popover"><div className="history-head"><strong>Purchase history</strong><button onClick={onClose}>×</button></div>{prices.slice(0, 12).map((p, i) => <div className="history-line" key={`${p.name}-${p.store}-${p.date}-${i}`}><span><strong>{p.name}</strong><small>{p.store} · {p.date}{p.unitSize ? ` · ${p.unitSize} (${priceLabel(p)})` : ""}</small></span><b>{money(p.amount)}</b></div>)}{prices.length === 0 && <p className="history-empty">Your household’s purchases will show up here.</p>}</div>;
+  const purchaseRows = purchasedItems.flatMap((item) => (item.purchases?.length ? item.purchases : item.prices).map((price) => ({ ...price, name: item.name })));
+  const years = [...new Set([String(today.getFullYear()), ...purchaseRows.map((row) => row.date.slice(0, 4))])].sort((a, b) => b.localeCompare(a));
+  const exportableRows = purchaseRows.filter((row) => exportRange === "all" || (exportRange === "month" ? row.date.slice(0, 7) === exportMonth : row.date.slice(0, 4) === exportYear));
+  function exportToGoogleSheets() {
+    const selectedRows = exportableRows;
+    if (!selectedRows.length) return;
+    const cell = (value: string | number) => {
+      const raw = String(value);
+      const safe = typeof value === "string" && /^[=+\-@\t\r]/.test(raw) ? `'${raw}` : raw;
+      return `"${safe.replace(/"/g, '""')}"`;
+    };
+    const lines = [["Date", "Food item", "Store", "Unit size", "Unit", "Price per unit", "Total paid"], ...selectedRows
+      .sort((a, b) => b.date.localeCompare(a.date))
+      .map((row) => [row.date, row.name, row.store, row.unitSize ?? "", row.unitSize ? unitLabel(row) : "", row.unitSize ? unitRate(row).toFixed(2) : "", row.amount.toFixed(2)])];
+    const csv = `\uFEFF${lines.map((line) => line.map((value) => cell(value)).join(",")).join("\r\n")}`;
+    const blobUrl = URL.createObjectURL(new Blob([csv], { type: "text/csv;charset=utf-8" }));
+    const link = document.createElement("a");
+    const period = exportRange === "month" ? exportMonth : exportRange === "year" ? exportYear : "all-time";
+    link.href = blobUrl;
+    link.download = `greenhouse-purchases-${period}.csv`;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    window.setTimeout(() => URL.revokeObjectURL(blobUrl), 1000);
+  }
+  return <div className="history-popover"><div className="history-head"><strong>Purchase history</strong><button onClick={onClose}>×</button></div><section className="history-export"><strong>Export for Google Sheets</strong><small>Download a CSV you can open in Google Sheets.</small><div className="history-export-controls"><select aria-label="Export date range" value={exportRange} onChange={(event) => setExportRange(event.target.value as typeof exportRange)}><option value="month">By month</option><option value="year">By year</option><option value="all">Total to date</option></select>{exportRange === "month" && <input aria-label="Choose month" type="month" value={exportMonth} onChange={(event) => setExportMonth(event.target.value)}/ >}{exportRange === "year" && <select aria-label="Choose year" value={exportYear} onChange={(event) => setExportYear(event.target.value)}>{years.map((year) => <option key={year} value={year}>{year}</option>)}</select>}<button type="button" className="primary-button" onClick={exportToGoogleSheets} disabled={!exportableRows.length}>Export</button></div></section>{prices.slice(0, 12).map((p, i) => <div className="history-line" key={`${p.name}-${p.store}-${p.date}-${i}`}><span><strong>{p.name}</strong><small>{p.store} · {p.date}{p.unitSize ? ` · ${p.unitSize} (${priceLabel(p)})` : ""}</small></span><b>{money(p.amount)}</b></div>)}{prices.length === 0 && <p className="history-empty">Your household’s purchases will show up here.</p>}</div>;
 }
