@@ -317,7 +317,6 @@ export default function Home() {
       .map(([store, entries]) => ({ store, entries, total: entries.reduce((sum, entry) => sum + entry.price.amount, 0) }))
       .sort((a, b) => b.entries.length - a.entries.length || a.total - b.total || a.store.localeCompare(b.store));
   }, [items]);
-  const tracked = items.filter((item) => item.prices.length > 0).length;
   const catalogItems = useMemo(() => {
     const combined = [...catalogOnly, ...purchasedItems, ...items];
     const unique = new Map<string, Item>();
@@ -498,35 +497,6 @@ export default function Home() {
     setNotice(`${archivedItem.name} added back to the grocery list`);
     window.setTimeout(() => setNotice(""), 3000);
   }
-  function importPrices(file?: File) {
-    if (!file) return;
-    const reader = new FileReader();
-    reader.onload = () => {
-      const rows = String(reader.result).split(/\r?\n/).map((row) => row.split(",").map((cell) => cell.trim().replace(/^"|"$/g, "")));
-      let count = 0;
-      setItems((list) => list.map((item) => {
-        const row = rows.find((cells, i) => i > 0 && cells[0]?.toLowerCase() === item.name.toLowerCase());
-        const unitSize = row?.[4]?.trim();
-        const parsedSize = unitSize ? parseUnitSize(unitSize) : null;
-        if (!row || !row[1] || !row[2] || !Number(row[2]) || Number(row[2]) <= 0 || !parsedSize) return item;
-        const savedUnitSize = unitSize!;
-        const size = parsedSize!;
-        const store = stores.find((s) => s.toLowerCase() === row[1].toLowerCase());
-        if (!store) return item;
-        count++;
-        const enteredAmount = Number(row[2]);
-        const perUnit = row[5]?.trim().toLowerCase() === "per-unit";
-        const amount = perUnit ? enteredAmount * size.quantity : enteredAmount;
-        const unitPrice = perUnit ? enteredAmount : enteredAmount / size.quantity;
-        const price: Price = { store, amount, unitSize: savedUnitSize, unitPrice, date: row[3] || new Date().toISOString().slice(0, 10) };
-        return { ...item, units: [...new Set([...(item.units ?? []), savedUnitSize])], prices: [...item.prices, price] };
-      }));
-      setNotice(`${count} price${count === 1 ? "" : "s"} added. Each CSV row needs item, store, price, date, and unit size; use “per-unit” in column 6 for per-unit prices.`);
-      window.setTimeout(() => setNotice(""), 3500);
-    };
-    reader.readAsText(file);
-  }
-
   return (
     <main className="app-shell">
       <aside className="sidebar">
@@ -534,12 +504,12 @@ export default function Home() {
         <div className="side-label">YOUR HOUSE</div>
         <div className="house-card"><span className="house-icon">⌂</span><span><strong>Greenhouse</strong><small>12 members</small></span><Icon name="chevron" size={15}/></div>
         <div className="side-label nav-label">WORKSPACE</div>
-        <button className={`nav-item ${activeTab === "list" ? "active" : ""}`} onClick={() => setActiveTab("list")}><Icon name="cart"/><span>Grocery list</span><b>{items.length}</b></button>
-        <button className={`nav-item ${activeTab === "prices" ? "active" : ""}`} onClick={() => setActiveTab("prices")}><Icon name="chart"/><span>Price comparison</span></button>
-        <button className={`nav-item ${activeTab === "items" ? "active" : ""}`} onClick={() => setActiveTab("items")}><Icon name="history"/><span>Items</span><b>{catalogItems.length}</b></button>
-        <button className={`nav-item ${activeTab === "stores" ? "active" : ""}`} onClick={() => setActiveTab("stores")}><Icon name="store"/><span>Stores</span><b>{stores.length}</b></button>
-        <button className={`nav-item ${activeTab === "community" ? "active" : ""}`} onClick={() => setActiveTab("community")}><Icon name="community"/><span>Community</span><b>{comments.length}</b></button>
-        <button className="nav-item" onClick={() => setShowHistory(showHistory ? null : "all")}><Icon name="history"/><span>Purchase history</span></button>
+        <button className={`nav-item ${!showHistory && activeTab === "list" ? "active" : ""}`} onClick={() => { setShowHistory(null); setActiveTab("list"); }}><Icon name="cart"/><span>List</span><b>{items.length}</b></button>
+        <button className={`nav-item ${!showHistory && activeTab === "prices" ? "active" : ""}`} onClick={() => { setShowHistory(null); setActiveTab("prices"); }}><Icon name="chart"/><span>Prices</span></button>
+        <button className={`nav-item ${!showHistory && activeTab === "items" ? "active" : ""}`} onClick={() => { setShowHistory(null); setActiveTab("items"); }}><Icon name="history"/><span>Items</span><b>{catalogItems.length}</b></button>
+        <button className={`nav-item ${!showHistory && activeTab === "stores" ? "active" : ""}`} onClick={() => { setShowHistory(null); setActiveTab("stores"); }}><Icon name="store"/><span>Stores</span><b>{stores.length}</b></button>
+        <button className={`nav-item ${!showHistory && activeTab === "community" ? "active" : ""}`} onClick={() => { setShowHistory(null); setActiveTab("community"); }}><Icon name="community"/><span>Board</span><b>{comments.length}</b></button>
+        <button className={`nav-item ${showHistory ? "active" : ""}`} onClick={() => setShowHistory(showHistory ? null : "all")}><Icon name="history"/><span>History</span></button>
         <div className="sidebar-bottom"><span className="house-icon">⌂</span><div className="member-copy"><strong>12 coop members</strong><small>Shared household</small></div></div>
       </aside>
 
@@ -548,9 +518,7 @@ export default function Home() {
         {!sharedConfigured && <div className="sync-banner"><strong>Changes are saved on this device only.</strong><span>To sync Greenhouse across phones and computers, configure the shared database and household access code.</span></div>}
         {sharedConfigured && syncStatus === "offline" && <div className="sync-banner"><strong>Can’t reach Greenhouse right now.</strong><span>Your changes are saved on this device and will sync when the connection returns.</span></div>}
         <div className="content">
-          <div className="welcome-row"><div><div className="eyebrow">GREENHOUSE COOPERATIVE · 12 MEMBERS</div><h1>{pageHeading}</h1><p>{pageDescription}</p></div>{(activeTab === "list" || activeTab === "prices") && <label className="upload-button" title="CSV columns: item, store, price, date, unit size, optional per-unit"><Icon name="upload" size={17}/> Upload prices<input type="file" accept=".csv,text/csv" onChange={(e) => importPrices(e.target.files?.[0])}/></label>}</div>
-
-          <div className="summary-grid"><div className="summary-card"><span className="summary-icon mint"><Icon name="cart"/></span><div><small>ON THE LIST</small><strong>{items.length} <em>items</em></strong></div></div><div className="summary-card"><span className="summary-icon peach"><Icon name="chart"/></span><div><small>PRICES TRACKED</small><strong>{tracked} <em>of {items.length} items</em></strong></div></div><div className="summary-card savings-card"><span className="summary-icon yellow"><Icon name="money"/></span><div><small>STORES WITH BEST PRICES</small><strong>{routeGroups.length} <em>{routeGroups.length === 1 ? "location" : "locations"}</em></strong></div></div></div>
+          <div className="welcome-row"><div><div className="eyebrow">GREENHOUSE COOPERATIVE · 12 MEMBERS</div><h1>{pageHeading}</h1><p>{pageDescription}</p></div></div>
 
           <div className="workspace-grid"><div className="list-panel panel">
             <div className="panel-heading"><div><h2>{activeTab === "community" ? "Community bulletin board" : panelHeading}</h2><p>{panelDescription}</p></div>{activeTab !== "community" && activeTab !== "stores" && <button className="icon-button" title="Purchase history" onClick={() => setShowHistory(showHistory ? null : "all")}><Icon name="history" size={17}/></button>}</div>

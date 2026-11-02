@@ -287,3 +287,19 @@ button { cursor: pointer; }
   .catalog-create-input { flex-wrap: wrap; }
   .catalog-create-input select { flex: 1 1 115px; }
 }
+
+@media (max-width: 760px) {
+  .sidebar { grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 7px; padding: 10px 12px 12px; }
+  .brand { grid-column: 1 / -1; margin-bottom: 4px; }
+  .nav-item,.nav-item.active { min-height: 36px; justify-content: center; gap: 0; padding: 7px 8px; border: 1px solid #dce5db; border-radius: 999px; color: #4d5b4e; background: #f0f4ee; box-shadow: 0 1px 2px #2033240d; }
+  .nav-item span { overflow: hidden; text-overflow: ellipsis; font-size: 10px; font-weight: 650; }
+  .nav-item svg,.nav-item b { display: none; }
+  .nav-item.active { border-color: #34734e; color: #fff; background: #397b57; box-shadow: 0 2px 7px #397b5733; }
+  .sidebar > .nav-item:last-of-type { grid-column: auto; }
+  .welcome-row { margin-bottom: 16px; }
+}
+@media (max-width: 500px) {
+  .sidebar { grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; padding: 9px 10px 11px; }
+  .nav-item,.nav-item.active { min-height: 34px; padding: 6px 5px; }
+  .nav-item span { font-size: 9px; }
+}
