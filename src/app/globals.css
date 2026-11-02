@@ -249,3 +249,41 @@ button { cursor: pointer; }
   .store-address-form { grid-template-columns: minmax(0,1fr); }
   .store-address-form button { min-height: 36px; }
 }
+
+.staples-menu-wrap { position: relative; flex: 0 0 auto; }
+.filter-button.selected { color: #367750; border-color: #c7dfcd; background: #edf5ef; }
+.staples-menu { position: absolute; z-index: 5; top: calc(100% + 6px); right: 0; width: min(260px, calc(100vw - 44px)); max-height: 320px; overflow: auto; padding: 5px; border: 1px solid #e4e9e3; border-radius: 9px; background: #fff; box-shadow: 0 10px 28px #26372d1c; }
+.staples-menu button { display: flex; width: 100%; align-items: center; justify-content: space-between; gap: 12px; padding: 10px; border: 0; border-radius: 6px; color: #424a43; background: #fff; text-align: left; font: inherit; font-size: 11px; }
+.staples-menu button:hover:not(:disabled) { background: #f2f6f1; }
+.staples-menu button:disabled { color: #909990; }
+.staples-menu button small { color: #548262; white-space: nowrap; }
+.staples-menu p { margin: 0; padding: 10px; color: #899289; font-size: 10px; line-height: 1.5; }
+.staple-label { color: #858d85; }
+.staple-label.is-staple { color: #397b57; font-weight: 650; }
+.new-item-type { display: flex; align-items: center; gap: 10px; padding: 0 12px 12px; color: #606b61; font-size: 10px; }
+.new-item-type select,.catalog-create-input select,.item-staple-field select { min-height: 34px; border: 1px solid #e3e8e2; border-radius: 6px; padding: 0 9px; color: #3f4941; background: #fff; font: inherit; font-size: 10px; }
+.catalog-create-input select { min-width: 115px; }
+.catalog-create-input button:disabled { background: #aebcaf; cursor: not-allowed; }
+.item-staple-field { display: flex; align-items: center; gap: 10px; margin: 0 0 14px; color: #606b61; font-size: 10px; }
+.item-staple-field select { min-width: 140px; }
+
+/* Keep every workspace visible on phones without a sideways-scrolling nav. */
+@media (max-width: 760px) {
+  .sidebar { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); align-items: stretch; gap: 6px; min-height: 0; padding: 10px 12px; overflow: visible; }
+  .brand { grid-column: 1 / -1; width: 100%; margin: 0 0 3px; }
+  .brand > span:last-child { display: inline-flex; }
+  .nav-item { width: 100%; min-width: 0; min-height: 42px; flex: initial; justify-content: flex-start; padding: 8px 10px; font-size: 10px; }
+  .nav-item span { display: inline; white-space: nowrap; }
+  .nav-item b { display: inline-block; margin-left: auto; }
+  .nav-item svg { width: 17px; height: 17px; flex: 0 0 auto; }
+  .sidebar > .nav-item:last-of-type { grid-column: 1 / -1; }
+}
+@media (max-width: 500px) {
+  .sidebar { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 5px; padding: 9px 10px; }
+  .nav-item { min-height: 40px; gap: 7px; padding: 7px 8px; font-size: 9px; }
+  .nav-item b { display: inline-block; }
+  .list-toolbar { align-items: stretch; }
+  .staples-menu-wrap .filter-button { padding: 0 9px; gap: 5px; white-space: nowrap; }
+  .catalog-create-input { flex-wrap: wrap; }
+  .catalog-create-input select { flex: 1 1 115px; }
+}
