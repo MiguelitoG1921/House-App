@@ -34,6 +34,7 @@ export type HouseholdSnapshot = {
   purchasedItems: unknown[];
   deletedCatalogNames: string[];
   stores: string[];
+  storeAddresses?: Record<string, string>;
   comments: { id: string; author: string; body: string; createdAt: string }[];
 };
 

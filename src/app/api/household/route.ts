@@ -21,6 +21,7 @@ function validSnapshot(value: unknown): value is HouseholdSnapshot {
     && Array.isArray(state.stores)
     && state.stores.length <= 200
     && state.stores.every((store) => typeof store === "string" && store.trim().length > 0 && store.length <= 60)
+    && (state.storeAddresses === undefined || (typeof state.storeAddresses === "object" && state.storeAddresses !== null && !Array.isArray(state.storeAddresses) && Object.entries(state.storeAddresses).length <= 200 && Object.entries(state.storeAddresses).every(([name, address]) => name.length > 0 && name.length <= 60 && typeof address === "string" && address.length <= 250)))
     && Array.isArray(state.comments)
     && state.comments.length <= 5000
     && state.comments.every(validComment)
